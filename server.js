@@ -515,7 +515,9 @@ app.get('/', (req, res) => {
 server.listen(PORT, () => {
     const proto = isHttps ? 'https' : 'http';
     const domain = config.domain || process.env.DOMAIN;
-    const baseHost = domain ? `${proto}://${domain}` : `${proto}://localhost:${PORT}`;
+    const extPort = config.externalPort || process.env.EXTERNAL_PORT;
+    const portSuffix = extPort && extPort != (isHttps ? 443 : 80) ? `:${extPort}` : '';
+    const baseHost = domain ? `${proto}://${domain}${portSuffix}` : `${proto}://localhost:${PORT}`;
     console.log(`====================================================`);
     console.log(`Stream Music Request System Running [${proto.toUpperCase()}]`);
     console.log(`Ссылка для зрителей:   ${baseHost}/order-music`);

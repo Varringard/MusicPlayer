@@ -91,24 +91,36 @@ menu_links() {
     local domain=$(get_config_val "domain")
     local skey=$(get_config_val "streamerKey")
     local wkey=$(get_config_val "widgetKey")
+    local ext_port=$(get_config_val "externalPort")
     
     local proto="http"
     if certbot certificates 2>/dev/null | grep -q "$domain"; then
         proto="https"
     fi
 
+    local port_str=""
+    if [ -n "$ext_port" ] && [ "$ext_port" != "80" ] && [ "$ext_port" != "443" ]; then
+        port_str=":$ext_port"
+    fi
+
+    local full_host="${domain}${port_str}"
+
     echo -e "🎵 ${BOLD}Заказ музыки для зрителей:${NC}"
-    echo -e "   ${CYAN}${proto}://${domain}/order-music${NC}\n"
+    echo -e "   ${CYAN}${proto}://${full_host}/order-music${NC}\n"
 
     echo -e "🎛 ${BOLD}Панель стримера (управление плеером):${NC}"
-    echo -e "   ${CYAN}${proto}://${domain}/music-panel${NC}"
+    echo -e "   ${CYAN}${proto}://${full_host}/music-panel${NC}"
     echo -e "   🔑 Пароль стримера: ${YELLOW}${BOLD}${skey}${NC}\n"
 
     echo -e "📺 ${BOLD}Виджет для OBS Studio / Streamlabs (Browser Source):${NC}"
-    echo -e "   ${CYAN}${proto}://${domain}/widget?key=${wkey}${NC}\n"
+    echo -e "   ${CYAN}${proto}://${full_host}/widget?key=${wkey}${NC}\n"
 
     echo -e "🌐 ${BOLD}Главная страница:${NC}"
-    echo -e "   ${CYAN}${proto}://${domain}/${NC}\n"
+    echo -e "   ${CYAN}${proto}://${full_host}/${NC}\n"
+
+    if [ -z "$port_str" ]; then
+        echo -e "${DIM}💡 Если на роутере проброшен нестандартный порт (например, 3000), укажите его в пункте 3 меню (Смена портов).${NC}\n"
+    fi
 
     pause_key
 }
@@ -274,44 +286,66 @@ EOF
 
 menu_ports() {
     clear
-    echo -e "${CYAN}${BOLD}=== ⚙️ Смена портов веб-сервера (Nginx) ===${NC}\n"
+    echo -e "${CYAN}${BOLD}=== ⚙️ Настройка портов (Внешний порт и Nginx) ===${NC}\n"
+    local current_ext_port=$(get_config_val "externalPort")
+    current_ext_port=${current_ext_port:-"443 (стандартный)"}
 
-    if [ ! -f "$NGINX_CONF" ]; then
-        echo -e "${RED}Конфигурационный файл $NGINX_CONF не найден!${NC}"
-        pause_key
-        return
-    fi
-
-    echo "Текущие порты в Nginx:"
-    grep -E "listen " "$NGINX_CONF" | sed -e 's/^[[:space:]]*//'
+    echo -e "Текущий внешний порт для ссылок: ${YELLOW}${BOLD}${current_ext_port}${NC}\n"
+    echo "1) Указать внешний порт роутера для ссылок (например: 3000)"
+    echo "2) Изменить внутренние порты в конфиге Nginx"
+    echo "0) Назад"
     echo ""
-    echo "Вы можете изменить внешний порт HTTP или HTTPS."
-    echo "Например: если порт 80 или 443 заняты, можно указать 8080 или 8443."
-    echo ""
-    read -rp "Хотите изменить порты в конфигурации? (y/n): " confirm
-    if [[ "$confirm" =~ ^[YyДд]$ ]]; then
-        read -rp "Новый порт HTTP (Enter чтобы оставить по умолчанию 80): " new_http
-        read -rp "Новый порт HTTPS (Enter чтобы оставить по умолчанию 443): " new_https
+    read -rp "Выберите действие [0-2]: " port_choice
 
-        if [ -n "$new_http" ]; then
-            sed -i -E "s/listen [0-9]+;/listen $new_http;/g" "$NGINX_CONF"
-            sed -i -E "s/listen \[::\]:[0-9]+;/listen [::]:$new_http;/g" "$NGINX_CONF"
-        fi
+    case $port_choice in
+        1)
+            echo ""
+            read -rp "Введите внешний порт роутера (например, 3000 или 443): " new_ext_port
+            new_ext_port=$(echo "$new_ext_port" | tr -d ' ')
+            if [ -n "$new_ext_port" ]; then
+                set_config_val "externalPort" "$new_ext_port"
+                echo -e "\n${GREEN}✓ Внешний порт $new_ext_port сохранен! Теперь все ссылки будут генерироваться с :$new_ext_port${NC}"
+                systemctl restart "$SERVICE_NAME"
+            fi
+            pause_key
+            ;;
+        2)
+            if [ ! -f "$NGINX_CONF" ]; then
+                echo -e "${RED}Конфигурационный файл $NGINX_CONF не найден!${NC}"
+                pause_key
+                return
+            fi
 
-        if [ -n "$new_https" ]; then
-            sed -i -E "s/listen [0-9]+ ssl;/listen $new_https ssl;/g" "$NGINX_CONF"
-            sed -i -E "s/listen \[::\]:[0-9]+ ssl;/listen [::]:$new_https ssl;/g" "$NGINX_CONF"
-        fi
+            echo "Текущие порты в Nginx:"
+            grep -E "listen " "$NGINX_CONF" | sed -e 's/^[[:space:]]*//'
+            echo ""
+            read -rp "Хотите изменить порты в конфигурации Nginx? (y/n): " confirm
+            if [[ "$confirm" =~ ^[YyДд]$ ]]; then
+                read -rp "Новый порт HTTP (Enter чтобы оставить по умолчанию 80): " new_http
+                read -rp "Новый порт HTTPS (Enter чтобы оставить по умолчанию 443): " new_https
 
-        echo -e "\n${YELLOW}Проверка синтаксиса Nginx...${NC}"
-        if nginx -t; then
-            systemctl reload nginx
-            echo -e "${GREEN}✓ Порты успешно обновлены и применены!${NC}"
-        else
-            echo -e "${RED}Ошибка в конфигурации Nginx! Проверьте файл $NGINX_CONF${NC}"
-        fi
-    fi
-    pause_key
+                if [ -n "$new_http" ]; then
+                    sed -i -E "s/listen [0-9]+;/listen $new_http;/g" "$NGINX_CONF"
+                    sed -i -E "s/listen \[::\]:[0-9]+;/listen [::]:$new_http;/g" "$NGINX_CONF"
+                fi
+
+                if [ -n "$new_https" ]; then
+                    sed -i -E "s/listen [0-9]+ ssl;/listen $new_https ssl;/g" "$NGINX_CONF"
+                    sed -i -E "s/listen \[::\]:[0-9]+ ssl;/listen [::]:$new_https ssl;/g" "$NGINX_CONF"
+                fi
+
+                echo -e "\n${YELLOW}Проверка синтаксиса Nginx...${NC}"
+                if nginx -t; then
+                    systemctl reload nginx
+                    echo -e "${GREEN}✓ Порты успешно обновлены и применены!${NC}"
+                else
+                    echo -e "${RED}Ошибка в конфигурации Nginx! Проверьте файл $NGINX_CONF${NC}"
+                fi
+            fi
+            pause_key
+            ;;
+        *) ;;
+    esac
 }
 
 menu_change_domain() {
