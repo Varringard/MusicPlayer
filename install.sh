@@ -308,6 +308,14 @@ systemctl restart "$SERVICE_NAME"
 
 sleep 2
 
+# Установка утилиты msui в PATH
+if [ -f "$APP_DIR/scripts/msui.sh" ]; then
+    cp "$APP_DIR/scripts/msui.sh" /usr/local/bin/msui
+    chmod +x /usr/local/bin/msui
+    ln -sf /usr/local/bin/msui /usr/bin/msui 2>/dev/null || true
+    echo -e "${GREEN}✓ Консольная панель управления доступна по команде: msui${NC}"
+fi
+
 # Проверка статуса
 if systemctl is-active --quiet "$SERVICE_NAME"; then
     echo -e "${GREEN}✓ Служба $SERVICE_NAME успешно запущена!${NC}"
@@ -326,17 +334,18 @@ echo -e "${GREEN}${BOLD}========================================================
 echo "            🎉 УСТАНОВКА УСПЕШНО ЗАВЕРШЕНА!                        "
 echo "==================================================================${NC}"
 echo ""
-echo -e "🌐 ${BOLD}Главная страница:${NC}      ${PROTO}://${DOMAIN}/"
-echo -e "🎵 ${BOLD}Заказ треков (зрители):${NC} ${PROTO}://${DOMAIN}/order-music"
-echo -e "🎛 ${BOLD}Панель стримера:${NC}       ${PROTO}://${DOMAIN}/music-panel"
-echo -e "🔑 ${BOLD}Пароль стримера:${NC}       ${YELLOW}${FINAL_STREAMER_KEY}${NC}"
-echo -e "📺 ${BOLD}Виджет для OBS Studio:${NC} ${PROTO}://${DOMAIN}/widget?key=${FINAL_WIDGET_KEY}"
+echo -e "🚀 ${BOLD}Консольное меню управления:${NC} ${YELLOW}${BOLD}msui${NC}  ${DIM}(введите msui в терминале)${NC}"
+echo -e "🌐 ${BOLD}Главная страница:${NC}           ${PROTO}://${DOMAIN}/"
+echo -e "🎵 ${BOLD}Заказ треков (зрители):${NC}      ${PROTO}://${DOMAIN}/order-music"
+echo -e "🎛 ${BOLD}Панель стримера:${NC}            ${PROTO}://${DOMAIN}/music-panel"
+echo -e "🔑 ${BOLD}Пароль стримера:${NC}            ${YELLOW}${FINAL_STREAMER_KEY}${NC}"
+echo -e "📺 ${BOLD}Виджет для OBS Studio:${NC}      ${PROTO}://${DOMAIN}/widget?key=${FINAL_WIDGET_KEY}"
 echo ""
-echo -e "${BOLD}Полезные команды управления в LXC:${NC}"
+echo -e "${BOLD}Быстрые команды:${NC}"
+echo -e " • Панель управления:      ${YELLOW}${BOLD}msui${NC}"
 echo -e " • Статус службы:          ${CYAN}systemctl status $SERVICE_NAME${NC}"
 echo -e " • Просмотр логов:         ${CYAN}journalctl -u $SERVICE_NAME -f${NC}"
 echo -e " • Перезапуск приложения:  ${CYAN}systemctl restart $SERVICE_NAME${NC}"
-echo -e " • Обновление сертификата: ${CYAN}certbot renew${NC}"
 echo -e " • Папка проекта:          ${CYAN}$APP_DIR${NC}"
 echo ""
 echo -e "${GREEN}==================================================================${NC}"

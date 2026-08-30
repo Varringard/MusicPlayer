@@ -217,6 +217,7 @@ echo -e "🔑 ${BOLD}Пароль стримера:${NC}         ${YELLOW}${STRE
 echo -e "📺 ${BOLD}Виджет для OBS Studio:${NC}   https://${DOMAIN}/widget?key=${WIDGET_KEY}"
 echo ""
 echo -e "${BOLD}Полезные команды на хосте Proxmox:${NC}"
+echo -e " • Панель управления (TUI):   ${YELLOW}${BOLD}pct enter $CTID${NC} и затем ${YELLOW}${BOLD}msui${NC}"
 echo -e " • Вход в консоль контейнера: ${CYAN}pct enter $CTID${NC}"
 echo -e " • Остановка контейнера:      ${CYAN}pct stop $CTID${NC}"
 echo -e " • Запуск контейнера:         ${CYAN}pct start $CTID${NC}"
