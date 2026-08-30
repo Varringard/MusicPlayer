@@ -85,6 +85,27 @@ show_header() {
     echo -e "${CYAN}------------------------------------------------------------------------${NC}"
 }
 
+detect_external_port() {
+    local dom="$1"
+    [ -z "$dom" ] && return
+    # Проверка порта 3000
+    if curl -s -k --connect-timeout 2 "https://${dom}:3000/" >/dev/null 2>&1; then
+        echo "3000"
+        return
+    fi
+    # Проверка стандартного 443
+    if curl -s -k --connect-timeout 2 "https://${dom}/" >/dev/null 2>&1; then
+        echo "443"
+        return
+    fi
+    # Проверка 8443
+    if curl -s -k --connect-timeout 2 "https://${dom}:8443/" >/dev/null 2>&1; then
+        echo "8443"
+        return
+    fi
+    echo ""
+}
+
 menu_links() {
     clear
     echo -e "${CYAN}${BOLD}=== 🔗 Ссылки для стрима и ключи доступа ===${NC}\n"
@@ -92,6 +113,15 @@ menu_links() {
     local skey=$(get_config_val "streamerKey")
     local wkey=$(get_config_val "widgetKey")
     local ext_port=$(get_config_val "externalPort")
+
+    # Автоматическое определение порта при первом открытии
+    if [ -z "$ext_port" ] && [ -n "$domain" ]; then
+        local detected=$(detect_external_port "$domain")
+        if [ -n "$detected" ]; then
+            ext_port="$detected"
+            set_config_val "externalPort" "$detected"
+        fi
+    fi
     
     local proto="http"
     if certbot certificates 2>/dev/null | grep -q "$domain"; then
