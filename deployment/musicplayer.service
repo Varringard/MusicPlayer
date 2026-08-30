@@ -1,0 +1,18 @@
+[Unit]
+Description=Stream Music Player Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/musicplayer
+ExecStart={{NODE_PATH}} server.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment=NODE_ENV=production
+Environment=PORT=3000
+
+[Install]
+WantedBy=multi-user.target

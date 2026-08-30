@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Заказ музыки</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        .clickable-card {
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .clickable-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(145, 70, 255, 0.2);
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-glow"></div>
+
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="brand">
+                <div>
+                    <h1 class="brand-title">Заказ музыки</h1>
+                    <p style="font-size: 0.8rem; color: var(--text-muted);">Отправка треков на трансляцию</p>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Layout -->
+        <div class="main-grid">
+            <!-- Left Column: Request Form -->
+            <div>
+                <div class="card">
+                    <h2 class="card-title">
+                        Заказать трек
+                    </h2>
+
+                    <form id="requestForm">
+                        <div class="form-group">
+                            <label class="form-label" for="requesterName">Ваш никнейм</label>
+                            <input type="text" id="requesterName" class="input-field" placeholder="Например: Viewer123" maxlength="25" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="youtubeUrl">Ссылка на YouTube видео / Shorts</label>
+                            <input type="text" id="youtubeUrl" class="input-field" placeholder="https://www.youtube.com/watch?v=..." required autocomplete="off">
+                        </div>
+
+                        <!-- Preview Card -->
+                        <div id="previewCard" class="preview-card clickable-card" title="Нажмите, чтобы открыть видео на YouTube">
+                            <div class="preview-content">
+                                <img id="previewThumb" class="preview-thumb" src="" alt="Thumbnail">
+                                <div class="preview-info">
+                                    <div id="previewTitle" class="preview-title">Название трека</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <button type="submit" id="submitBtn" class="btn">
+                            Добавить в очередь
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Rules -->
+                <div class="card" style="margin-top: 1.5rem;">
+                    <h3 style="font-size: 0.95rem; font-weight: 700; margin-bottom: 0.5rem;">Правила заказа</h3>
+                    <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.6;">
+                        Вставьте ссылку на любой трек или видео с YouTube. Трек встанет в общую очередь и заиграет на трансляции у стримера.
+                    </p>
+                </div>
+            </div>
+
+            <!-- Right Column: Live Status & Queue -->
+            <div>
+                <!-- Now Playing Card -->
+                <div class="card" style="margin-bottom: 1.5rem;">
+                    <h2 class="card-title">
+                        Сейчас играет
+                    </h2>
+
+                    <div id="nowPlayingBox">
+                        <div class="empty-state" id="npEmpty">
+                            <p>Сейчас ничего не играет</p>
+                            <p style="font-size: 0.8rem; margin-top: 4px;">Будьте первым, кто закажет трек</p>
+                        </div>
+
+                        <div id="npContent" style="display: none;">
+                            <div class="now-playing-box clickable-card" id="npCard" title="Нажмите, чтобы открыть видео на YouTube">
+                                <div class="np-thumb-wrapper">
+                                    <img id="npThumb" class="np-thumb" src="" alt="Album Art">
+                                </div>
+                                <div class="np-details">
+                                    <div id="npTitle" class="np-title">Название трека</div>
+                                    <div class="np-requester">
+                                        <span>Заказал:</span>
+                                        <strong id="npRequester">Аноним</strong>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="progress-bar-container">
+                                <div id="progressBarFill" class="progress-bar-fill"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Queue Card -->
+                <div class="card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem;">
+                        <h2 class="card-title" style="margin-bottom: 0;">
+                            Очередь треков
+                        </h2>
+                        <span id="queueCount" style="font-size: 0.85rem; font-weight: 700; color: var(--accent-purple); background: rgba(145, 70, 255, 0.15); padding: 2px 8px; border-radius: 12px;">0</span>
+                    </div>
+
+                    <ul id="queueList" class="queue-list">
+                        <li class="empty-state">
+                            <p>В очереди пока нет треков</p>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notifications Container -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <script>
+        const socket = io();
+        let previewDebounceTimer = null;
+        let currentPreviewVideoId = null;
+        let currentPlayingVideoId = null;
+
+        const requestForm = document.getElementById('requestForm');
+        const requesterNameInput = document.getElementById('requesterName');
+        const youtubeUrlInput = document.getElementById('youtubeUrl');
+        const submitBtn = document.getElementById('submitBtn');
+        const previewCard = document.getElementById('previewCard');
+        const previewThumb = document.getElementById('previewThumb');
+        const previewTitle = document.getElementById('previewTitle');
+
+        const npEmpty = document.getElementById('npEmpty');
+        const npContent = document.getElementById('npContent');
+        const npCard = document.getElementById('npCard');
+        const npThumb = document.getElementById('npThumb');
+        const npTitle = document.getElementById('npTitle');
+        const npRequester = document.getElementById('npRequester');
+        const progressBarFill = document.getElementById('progressBarFill');
+
+        const queueList = document.getElementById('queueList');
+        const queueCount = document.getElementById('queueCount');
+
+        const savedName = localStorage.getItem('stream_music_nickname');
+        if (savedName) {
+            requesterNameInput.value = savedName;
+        }
+
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.innerText = message;
+            container.appendChild(toast);
+
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateX(100%)';
+                toast.style.transition = 'all 0.3s ease';
+                setTimeout(() => toast.remove(), 300);
+            }, 5000);
+        }
+
+        previewCard.addEventListener('click', () => {
+            if (currentPreviewVideoId) {
+                window.open(`https://www.youtube.com/watch?v=${currentPreviewVideoId}`, '_blank');
+            }
+        });
+
+        npCard.addEventListener('click', () => {
+            if (currentPlayingVideoId) {
+                window.open(`https://www.youtube.com/watch?v=${currentPlayingVideoId}`, '_blank');
+            }
+        });
+
+        youtubeUrlInput.addEventListener('input', () => {
+            const url = youtubeUrlInput.value.trim();
+            clearTimeout(previewDebounceTimer);
+
+            if (!url) {
+                previewCard.style.display = 'none';
+                currentPreviewVideoId = null;
+                return;
+            }
+
+            previewDebounceTimer = setTimeout(() => {
+                socket.emit('preview_track', url, (response) => {
+                    if (response && response.success) {
+                        currentPreviewVideoId = response.metadata.id;
+                        previewThumb.src = response.metadata.thumbnail;
+                        previewTitle.innerText = response.metadata.title;
+                        previewCard.style.display = 'block';
+                    } else {
+                        previewCard.style.display = 'none';
+                        currentPreviewVideoId = null;
+                    }
+                });
+            }, 250);
+        });
+
+        requestForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const nickname = requesterNameInput.value.trim();
+            const url = youtubeUrlInput.value.trim();
+
+            if (!nickname) {
+                showToast('Пожалуйста, укажите ваш никнейм', 'error');
+                return;
+            }
+            if (!url) {
+                showToast('Пожалуйста, укажите ссылку на YouTube', 'error');
+                return;
+            }
+
+            localStorage.setItem('stream_music_nickname', nickname);
+            submitBtn.disabled = true;
+            submitBtn.innerText = 'Отправка...';
+
+            try {
+                const res = await fetch('/api/request', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url, requesterName: nickname })
+                });
+
+                const data = await res.json();
+
+                if (!res.ok) {
+                    throw new Error(data.error || 'Ошибка при добавлении трека');
+                }
+
+                showToast(`"${data.track.title}" добавлен в очередь`, 'success');
+                youtubeUrlInput.value = '';
+                previewCard.style.display = 'none';
+                currentPreviewVideoId = null;
+            } catch (err) {
+                showToast(err.message, 'error');
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.innerText = 'Добавить в очередь';
+            }
+        });
+
+        socket.on('state_update', (state) => {
+            renderNowPlaying(state.currentTrack, state.isPlaying);
+            renderQueue(state.queue);
+            if (state.duration > 0) {
+                const percent = (state.currentTime / state.duration) * 100;
+                progressBarFill.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+            }
+        });
+
+        socket.on('progress_update', (data) => {
+            if (data.duration > 0) {
+                const percent = (data.currentTime / data.duration) * 100;
+                progressBarFill.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+            }
+        });
+
+        function renderNowPlaying(track, isPlaying) {
+            if (!track) {
+                npEmpty.style.display = 'block';
+                npContent.style.display = 'none';
+                currentPlayingVideoId = null;
+                return;
+            }
+
+            currentPlayingVideoId = track.id;
+            npEmpty.style.display = 'none';
+            npContent.style.display = 'block';
+            npThumb.src = track.thumbnail;
+            npTitle.innerText = track.title;
+            npRequester.innerText = track.requestedBy || 'Аноним';
+        }
+
+        function renderQueue(queue) {
+            queueCount.innerText = queue.length;
+
+            if (!queue || queue.length === 0) {
+                queueList.innerHTML = `
+                    <li class="empty-state">
+                        <p>В очереди пока нет треков</p>
+                    </li>
+                `;
+                return;
+            }
+
+            queueList.innerHTML = queue.map((item) => `
+                <li class="queue-item clickable-card" onclick="window.open('https://www.youtube.com/watch?v=${item.id}', '_blank')" title="Нажмите, чтобы открыть видео на YouTube">
+                    <img class="queue-thumb" src="${item.thumbnail}" alt="thumb">
+                    <div class="queue-info" style="min-width:0;overflow:hidden;">
+                        <div class="queue-track-title">${item.title}</div>
+                        <div class="queue-track-meta">Заказал: ${item.requestedBy}</div>
+                    </div>
+                </li>
+            `).join('');
+        }
+    </script>
+</body>
+</html>

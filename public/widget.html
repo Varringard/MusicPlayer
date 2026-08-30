@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OBS Music Widget</title>
+    <link rel="stylesheet" href="/css/widget.css">
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://www.youtube.com/iframe_api"></script>
+    <style>
+        #obsAudioEngine {
+            position: fixed;
+            bottom: 0;
+            right: 0;
+            width: 160px;
+            height: 90px;
+            z-index: -999;
+            opacity: 0.01;
+            pointer-events: none;
+            overflow: hidden;
+        }
+
+        .access-denied {
+            background: rgba(235, 4, 0, 0.85);
+            color: white;
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.5);
+        }
+    </style>
+</head>
+<body>
+    <div id="accessDeniedBox" style="display: none;" class="access-denied">
+        Ошибка: укажите ключ виджета (?key=ВАШ_КЛЮЧ)
+    </div>
+
+    <!-- Hidden Audio Engine -->
+    <div id="obsAudioEngine">
+        <div id="obsYtPlayer"></div>
+    </div>
+
+    <!-- Minimalist OBS Widget Card -->
+    <div id="widgetCard" class="widget-card">
+        <div class="title-container">
+            <div id="trackTitle" class="track-title">Название трека</div>
+        </div>
+        <div class="track-meta-row">
+            <span class="requester-text">Заказал: <span id="trackRequester" class="requester-name">Никнейм</span></span>
+            <span id="trackTime" class="time-text">00:00 / 00:00</span>
+        </div>
+        <div class="widget-progress-container">
+            <div id="widgetProgressFill" class="widget-progress-fill"></div>
+        </div>
+    </div>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const widgetKey = urlParams.get('key');
+
+        const accessDeniedBox = document.getElementById('accessDeniedBox');
+        const widgetCard = document.getElementById('widgetCard');
+        const trackTitle = document.getElementById('trackTitle');
+        const trackRequester = document.getElementById('trackRequester');
+        const trackTime = document.getElementById('trackTime');
+        const widgetProgressFill = document.getElementById('widgetProgressFill');
+
+        let currentTrackId = null;
+        let pendingTrack = null;
+        let ytPlayer = null;
+        let isYtReady = false;
+        let socket = null;
+        let progressInterval = null;
+        let currentVolume = 80;
+
+        function formatTime(seconds) {
+            if (!seconds || isNaN(seconds)) return '00:00';
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        function autoScaleTitle() {
+            const len = trackTitle.innerText.length;
+            if (len > 70)       trackTitle.style.fontSize = '11.5px';
+            else if (len > 50)  trackTitle.style.fontSize = '13px';
+            else if (len > 35)  trackTitle.style.fontSize = '14.5px';
+            else                trackTitle.style.fontSize = '16px';
+        }
+
+        // ─── YouTube IFrame API ──────────────────────────────────────
+        window.onYouTubeIframeAPIReady = function () {
+            ytPlayer = new YT.Player('obsYtPlayer', {
+                height: '90',
+                width: '160',
+                playerVars: {
+                    autoplay: 1,
+                    controls: 0,
+                    modestbranding: 1,
+                    rel: 0,
+                    enablejsapi: 1,
+                    origin: window.location.origin
+                },
+                events: {
+                    onReady: () => {
+                        isYtReady = true;
+                        ytPlayer.unMute();
+                        ytPlayer.setVolume(currentVolume);
+                        startProgressReporter();
+                        if (pendingTrack) {
+                            loadTrack(pendingTrack, pendingTrack._seekTo || 0);
+                            pendingTrack = null;
+                        }
+                    },
+                    onStateChange: (event) => {
+                        if (event.data === YT.PlayerState.ENDED) {
+                            if (socket) socket.emit('widget_track_ended', widgetKey);
+                        }
+                    },
+                    onError: (event) => {
+                        console.warn('YouTube IFrame error code:', event.data);
+                        setTimeout(() => {
+                            if (socket) socket.emit('widget_track_ended', widgetKey);
+                        }, 1000);
+                    }
+                }
+            });
+        };
+
+        function loadTrack(track, seekTo) {
+            if (!track || !track.id) return;
+            currentTrackId = track.id;
+
+            if (!isYtReady || !ytPlayer) {
+                pendingTrack = { ...track, _seekTo: seekTo || 0 };
+                return;
+            }
+
+            ytPlayer.unMute();
+            ytPlayer.setVolume(currentVolume);
+            ytPlayer.loadVideoById({
+                videoId: track.id,
+                startSeconds: seekTo || 0,
+                suggestedQuality: 'small'
+            });
+            ytPlayer.playVideo();
+        }
+
+        // ─── Progress Reporter — widget is the master source ─────────
+        function startProgressReporter() {
+            if (progressInterval) clearInterval(progressInterval);
+            progressInterval = setInterval(() => {
+                if (!isYtReady || !ytPlayer || typeof ytPlayer.getCurrentTime !== 'function') return;
+
+                const currentTime = ytPlayer.getCurrentTime() || 0;
+                const duration = ytPlayer.getDuration() || 0;
+
+                if (duration > 0) {
+                    trackTime.innerText = `${formatTime(currentTime)} / ${formatTime(duration)}`;
+                    const pct = Math.min(100, Math.max(0, (currentTime / duration) * 100));
+                    widgetProgressFill.style.width = `${pct}%`;
+                    if (socket) {
+                        socket.emit('widget_progress', { currentTime, duration, widgetKey });
+                    }
+                }
+            }, 200);
+        }
+
+        // ─── Auth + Socket Init ───────────────────────────────────────
+        async function init() {
+            if (!widgetKey) {
+                accessDeniedBox.style.display = 'inline-flex';
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/auth/verify-widget', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ key: widgetKey })
+                });
+
+                if (!res.ok) {
+                    accessDeniedBox.style.display = 'inline-flex';
+                    return;
+                }
+
+                initSocket();
+
+                if (window.YT && window.YT.Player && !ytPlayer) {
+                    window.onYouTubeIframeAPIReady();
+                }
+            } catch (e) {
+                accessDeniedBox.style.display = 'inline-flex';
+            }
+        }
+
+        function initSocket() {
+            socket = io();
+
+            socket.on('state_update', (serverState) => {
+                if (serverState.volume !== undefined) {
+                    currentVolume = serverState.volume;
+                    if (isYtReady && ytPlayer && typeof ytPlayer.setVolume === 'function') {
+                        ytPlayer.setVolume(currentVolume);
+                    }
+                }
+
+                const track = serverState.currentTrack;
+                updateWidgetCard(track);
+
+                if (track && track.id !== currentTrackId) {
+                    loadTrack(track, serverState.currentTime || 0);
+                } else if (!track && currentTrackId) {
+                    currentTrackId = null;
+                    if (isYtReady && ytPlayer && typeof ytPlayer.stopVideo === 'function') {
+                        ytPlayer.stopVideo();
+                    }
+                    trackTime.innerText = '00:00 / 00:00';
+                    widgetProgressFill.style.width = '0%';
+                }
+            });
+
+            // Panel seeks → widget seeks too
+            socket.on('command_seek', (seconds) => {
+                if (isYtReady && ytPlayer && typeof ytPlayer.seekTo === 'function') {
+                    ytPlayer.seekTo(seconds, true);
+                    ytPlayer.playVideo();
+                }
+            });
+
+            // Panel play/pause → widget mirrors
+            socket.on('command_play_pause', (isPlaying) => {
+                if (!isYtReady || !ytPlayer) return;
+                if (isPlaying) ytPlayer.playVideo();
+                else ytPlayer.pauseVideo();
+            });
+
+            // Panel volume control → widget volume
+            socket.on('command_set_volume', (vol) => {
+                currentVolume = vol;
+                if (isYtReady && ytPlayer && typeof ytPlayer.setVolume === 'function') {
+                    ytPlayer.setVolume(vol);
+                }
+            });
+        }
+
+        function updateWidgetCard(track) {
+            if (!track) {
+                widgetCard.classList.remove('visible');
+                return;
+            }
+
+            trackTitle.innerText = track.title;
+            trackRequester.innerText = track.requestedBy || 'Аноним';
+            autoScaleTitle();
+            widgetCard.classList.add('visible');
+        }
+
+        init();
+    </script>
+</body>
+</html>

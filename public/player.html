@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Панель управления</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://www.youtube.com/iframe_api"></script>
+    <style>
+        .auth-overlay {
+            position: fixed; top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            background: rgba(14, 14, 16, 0.95);
+            backdrop-filter: blur(20px);
+            z-index: 10000;
+            display: flex; align-items: center; justify-content: center;
+            padding: 1rem;
+        }
+        .auth-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 2.5rem 2rem;
+            max-width: 400px; width: 100%;
+            text-align: center;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.7);
+        }
+        .player-container {
+            display: grid;
+            grid-template-columns: 1.15fr 0.85fr;
+            gap: 2rem;
+        }
+        /* Critical: prevents grid cells from expanding to fit content */
+        .player-container > * {
+            min-width: 0;
+            overflow: hidden;
+        }
+        @media (max-width: 992px) { .player-container { grid-template-columns: 1fr; } }
+        .video-box {
+            position: relative; width: 100%; padding-bottom: 56.25%;
+            background: #000; border-radius: 12px; overflow: hidden;
+            border: 1px solid var(--border-color); margin-bottom: 1.25rem;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+        }
+        .video-box #ytPlayerEl {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        }
+        /* Autoplay blocker overlay */
+        .autoplay-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.75);
+            display: flex; align-items: center; justify-content: center;
+            flex-direction: column; gap: 12px;
+            z-index: 10; cursor: pointer;
+            border-radius: 12px;
+        }
+        .autoplay-overlay-btn {
+            background: var(--accent-purple);
+            border: none; color: white;
+            padding: 12px 28px; border-radius: 10px;
+            font-size: 1rem; font-weight: 700;
+            cursor: pointer; letter-spacing: 0.5px;
+            box-shadow: 0 4px 20px var(--accent-purple-glow);
+            transition: transform 0.15s;
+        }
+        .autoplay-overlay-btn:hover { transform: scale(1.05); }
+        .autoplay-overlay p { color: #aaa; font-size: 0.85rem; }
+        .scrubber-container {
+            position: relative; width: 100%; height: 8px;
+            background: rgba(255,255,255,0.08); border-radius: 4px;
+            cursor: pointer; margin: 1.25rem 0 0.75rem;
+            transition: height 0.2s ease;
+        }
+        .scrubber-container:hover { height: 10px; }
+        .scrubber-fill {
+            height: 100%; width: 0%;
+            background: linear-gradient(90deg, #9146ff, #00f0ff);
+            border-radius: 4px; position: relative;
+            pointer-events: none; transition: width 0.15s linear;
+        }
+        .scrubber-handle {
+            position: absolute; right: -5px; top: 50%;
+            transform: translateY(-50%);
+            width: 12px; height: 12px; background: #fff;
+            border-radius: 50%; box-shadow: 0 0 10px rgba(0,240,255,0.8);
+            opacity: 0; transition: opacity 0.2s;
+        }
+        .scrubber-container:hover .scrubber-handle { opacity: 1; }
+        .scrubber-time-row {
+            display: flex; justify-content: space-between;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem; color: var(--text-muted); margin-bottom: 1.25rem;
+        }
+        .player-controls {
+            display: flex; align-items: center; gap: 1rem;
+            background: var(--bg-card); padding: 1rem 1.25rem;
+            border-radius: 12px; border: 1px solid var(--border-color);
+            margin-bottom: 1.5rem;
+        }
+        .ctrl-btn {
+            background: var(--bg-card-hover); border: 1px solid var(--border-color);
+            color: white; width: 44px; height: 44px;
+            border-radius: 10px; display: flex; align-items: center; justify-content: center;
+            cursor: pointer; transition: all 0.2s;
+        }
+        .ctrl-btn:hover { background: var(--accent-purple); border-color: var(--accent-purple); transform: scale(1.05); }
+        .ctrl-btn.play-btn {
+            background: var(--accent-purple); width: 48px; height: 48px;
+            box-shadow: 0 4px 15px var(--accent-purple-glow);
+        }
+        .ctrl-btn.play-btn:hover { background: #a35eff; }
+        .volume-control { display: flex; align-items: center; gap: 0.5rem; margin-left: auto; }
+        .volume-slider {
+            -webkit-appearance: none; width: 100px; height: 6px;
+            border-radius: 3px; background: rgba(255,255,255,0.15); outline: none; cursor: pointer;
+        }
+        .volume-slider::-webkit-slider-thumb {
+            -webkit-appearance: none; width: 14px; height: 14px;
+            border-radius: 50%; background: var(--accent-purple); cursor: pointer;
+            box-shadow: 0 0 8px var(--accent-purple);
+        }
+        .copy-box {
+            background: var(--bg-card); border: 1px solid var(--border-color);
+            border-radius: 10px; padding: 0.75rem 1rem;
+            display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem;
+        }
+        .copy-label { font-size: 0.8rem; font-weight: 600; color: var(--text-muted); }
+        .copy-url { font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: var(--accent-cyan); margin-top: 2px; word-break: break-all; }
+        .copy-btn {
+            background: rgba(255,255,255,0.06); border: 1px solid var(--border-color);
+            color: white; padding: 6px 12px; border-radius: 6px;
+            font-size: 0.8rem; cursor: pointer; transition: all 0.2s;
+            flex-shrink: 0; margin-left: 0.75rem;
+        }
+        .copy-btn:hover { background: var(--accent-purple); border-color: var(--accent-purple); }
+    </style>
+</head>
+<body>
+<div class="bg-glow"></div>
+
+<!-- Auth Screen -->
+<div id="authOverlay" class="auth-overlay" style="display:none;">
+    <div class="auth-card">
+        <h2 style="font-size:1.3rem;font-weight:700;margin-bottom:0.5rem;">Вход для стримера</h2>
+        <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:1.5rem;">Введите пароль для доступа к управлению</p>
+        <form id="authForm">
+            <input type="password" id="authPasswordInput" class="input-field"
+                placeholder="Пароль" style="margin-bottom:1rem;text-align:center;font-size:1rem;" required autofocus>
+            <div id="authError" style="color:var(--danger);font-size:0.85rem;margin-bottom:1rem;display:none;"></div>
+            <button type="submit" class="btn">Войти</button>
+        </form>
+    </div>
+</div>
+
+<!-- Main Dashboard -->
+<div class="container">
+    <header class="header">
+        <div class="brand">
+            <div>
+                <h1 class="brand-title">Панель управления</h1>
+                <p style="font-size:0.8rem;color:var(--text-muted);">Управление воспроизведением и очередью</p>
+            </div>
+        </div>
+        <div style="display:flex;gap:1.25rem;align-items:center;flex-wrap:wrap;">
+            <!-- Local Headphone Volume Control for Streamer -->
+            <div style="display:flex;align-items:center;gap:0.5rem;background:var(--bg-card);padding:6px 12px;border-radius:10px;border:1px solid var(--border-color);" title="Громкость только для вас (в наушниках на этом ПК, не влияет на стрим)">
+                <svg width="16" height="16" fill="var(--accent-cyan)" viewBox="0 0 24 24"><path d="M12 3a9 9 0 0 0-9 9v7c0 1.66 1.34 3 3 3h1a2 2 0 0 0 2-2v-4a2 2 0 0 0-2-2H5v-2a7 7 0 0 1 14 0v2h-2a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h1c1.66 0 3-1.34 3-3v-7a9 9 0 0 0-9-9z"/></svg>
+                <span style="font-size:0.75rem;color:var(--text-muted);font-weight:600;white-space:nowrap;">Для себя:</span>
+                <input type="range" id="localVolumeSlider" class="volume-slider" min="0" max="100" value="60" style="width:75px;" title="Громкость для вас (в наушниках)">
+                <span id="localVolumeValue" style="font-family:'JetBrains Mono',monospace;font-size:0.75rem;color:var(--accent-cyan);min-width:32px;">60%</span>
+            </div>
+            <div style="display:flex;gap:0.75rem;align-items:center;">
+                <button id="btnChangePassword" class="nav-link" style="cursor:pointer;">Сменить пароль</button>
+                <button id="btnLogout" class="nav-link" style="cursor:pointer;color:#ff5e5b;">Выйти</button>
+            </div>
+        </div>
+    </header>
+
+    <div class="player-container">
+        <!-- Left: Video & Controls -->
+        <div>
+            <div class="card">
+                <div class="video-box" id="videoBox">
+                    <div id="ytPlayerEl"></div>
+                    <audio id="panelFallbackAudio" preload="auto"></audio>
+                    <!-- Fallback Visual Card (shown when YouTube iframe embedding is blocked) -->
+                    <div id="fallbackVisualBox" style="display:none;position:absolute;inset:0;background-size:cover;background-position:center;align-items:center;justify-content:center;flex-direction:column;gap:12px;background-color:#111;">
+                        <div style="background:rgba(0,0,0,0.8);backdrop-filter:blur(10px);padding:10px 18px;border-radius:12px;border:1px solid var(--accent-cyan);color:white;font-size:0.85rem;font-weight:600;display:flex;align-items:center;gap:10px;box-shadow:0 8px 30px rgba(0,0,0,0.6);">
+                            <svg width="20" height="20" fill="var(--accent-cyan)" viewBox="0 0 24 24"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+                            <span>Прямой аудиопоток (обход блокировки YouTube)</span>
+                        </div>
+                    </div>
+                    <!-- Shown when browser blocks autoplay -->
+                    <div id="autoplayOverlay" class="autoplay-overlay" style="display:none;" onclick="userStartPlayback()">
+                        <button class="autoplay-overlay-btn">Нажмите, чтобы слушать</button>
+                        <p>Браузер заблокировал автозапуск</p>
+                    </div>
+                </div>
+
+                <div style="margin-bottom:1rem;">
+                    <div style="font-size:0.75rem;color:var(--accent-purple);font-weight:700;text-transform:uppercase;margin-bottom:4px;">СЕЙЧАС ИГРАЕТ</div>
+                    <h2 id="currentTitle" style="font-size:1.2rem;font-weight:700;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Трек не выбран</h2>
+                    <p id="currentMeta" style="font-size:0.85rem;color:var(--text-muted);">Ожидание заказов...</p>
+                </div>
+
+                <div class="scrubber-container" id="scrubberContainer" title="Перемотка трека">
+                    <div class="scrubber-fill" id="scrubberFill">
+                        <span class="scrubber-handle"></span>
+                    </div>
+                </div>
+                <div class="scrubber-time-row">
+                    <span id="timeCurrent">00:00</span>
+                    <span id="timeTotal">00:00</span>
+                </div>
+
+                <div class="player-controls">
+                    <button id="btnPlayPause" class="ctrl-btn play-btn" title="Воспроизвести / Пауза">
+                        <svg id="playIcon" width="22" height="22" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                        <svg id="pauseIcon" style="display:none;" width="22" height="22" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                    </button>
+                    <button id="btnSkip" class="ctrl-btn" title="Следующий трек">
+                        <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+                    </button>
+                    <div class="volume-control">
+                        <svg width="18" height="18" fill="var(--text-muted)" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+                        <input type="range" id="volumeSlider" class="volume-slider" min="0" max="100" value="80" title="Громкость">
+                        <span id="volumeValue" style="font-family:'JetBrains Mono',monospace;font-size:0.8rem;color:var(--text-muted);min-width:38px;text-align:right;">80%</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card" style="margin-top:1.5rem;">
+                <h3 class="card-title">Ссылки для подключения</h3>
+                <div class="copy-box">
+                    <div style="overflow:hidden;">
+                        <div class="copy-label">Ссылка для зрителей:</div>
+                        <div class="copy-url" id="viewerUrlText">http://localhost:3000/</div>
+                    </div>
+                    <button class="copy-btn" onclick="copyToClipboard(document.getElementById('viewerUrlText').innerText)">Копировать</button>
+                </div>
+                <div class="copy-box">
+                    <div style="overflow:hidden;">
+                        <div class="copy-label">Ссылка для OBS Studio:</div>
+                        <div class="copy-url" id="widgetUrlText">http://localhost:3000/widget</div>
+                    </div>
+                    <button class="copy-btn" onclick="copyToClipboard(document.getElementById('widgetUrlText').innerText)">Копировать</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right: Queue & History -->
+        <div>
+            <div class="card" style="margin-bottom:1.5rem;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;gap:0.75rem;">
+                    <h2 class="card-title" style="margin-bottom:0;white-space:nowrap;flex-shrink:0;">Очередь&nbsp;<span id="queueBadge" style="color:var(--accent-purple);">0</span></h2>
+                    <button id="btnClearQueue" class="btn-secondary btn-danger"
+                        style="padding:4px 10px;font-size:0.75rem;border-radius:6px;width:auto;flex-shrink:0;">Очистить все</button>
+                </div>
+                <ul id="adminQueueList" class="queue-list" style="max-height:380px;">
+                    <li class="empty-state"><p>Очередь пуста</p></li>
+                </ul>
+            </div>
+            <div class="card">
+                <h3 class="card-title">История</h3>
+                <ul id="historyList" class="queue-list" style="max-height:250px;">
+                    <li class="empty-state"><p>История пуста</p></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const socket = io();
+    let streamerAuthKey = null;
+    let ytPlayer = null;
+    let isYtReady = false;
+    let currentLoadedId = null;
+    let currentDuration = 0;
+    let lastReceivedState = null;
+    // Stored when player isn't ready yet but a track needs to load
+    let pendingLoad = null;   // { videoId, startSeconds }
+
+    const authOverlay = document.getElementById('authOverlay');
+    const authForm = document.getElementById('authForm');
+    const authPasswordInput = document.getElementById('authPasswordInput');
+    const authError = document.getElementById('authError');
+    const currentTitle = document.getElementById('currentTitle');
+    const currentMeta = document.getElementById('currentMeta');
+    const scrubberContainer = document.getElementById('scrubberContainer');
+    const scrubberFill = document.getElementById('scrubberFill');
+    const timeCurrent = document.getElementById('timeCurrent');
+    const timeTotal = document.getElementById('timeTotal');
+    const btnPlayPause = document.getElementById('btnPlayPause');
+    const playIcon = document.getElementById('playIcon');
+    const pauseIcon = document.getElementById('pauseIcon');
+    const btnSkip = document.getElementById('btnSkip');
+    const localVolumeSlider = document.getElementById('localVolumeSlider');
+    const localVolumeValue = document.getElementById('localVolumeValue');
+    const savedLocalVolume = localStorage.getItem('panel_local_volume');
+    if (savedLocalVolume !== null) {
+        localVolumeSlider.value = savedLocalVolume;
+        localVolumeValue.innerText = `${savedLocalVolume}%`;
+    }
+
+    const volumeSlider = document.getElementById('volumeSlider');
+    const volumeValue = document.getElementById('volumeValue');
+    const savedVolume = localStorage.getItem('streamer_volume');
+    if (savedVolume !== null) {
+        volumeSlider.value = savedVolume;
+        volumeValue.innerText = `${savedVolume}%`;
+    }
+    const adminQueueList = document.getElementById('adminQueueList');
+    const queueBadge = document.getElementById('queueBadge');
+    const btnClearQueue = document.getElementById('btnClearQueue');
+    const historyList = document.getElementById('historyList');
+    const autoplayOverlay = document.getElementById('autoplayOverlay');
+
+    // ─── Auth ─────────────────────────────────────────────────────────
+    async function verifyKey(key) {
+        try {
+            const res = await fetch('/api/auth/verify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key })
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                streamerAuthKey = key;
+                localStorage.setItem('streamer_key', key);
+                authOverlay.style.display = 'none';
+                const origin = window.location.origin;
+                document.getElementById('viewerUrlText').innerText = `${origin}/`;
+                document.getElementById('widgetUrlText').innerText = `${origin}/widget?key=${data.widgetKey}`;
+                // Apply state now that we're authenticated
+                if (lastReceivedState) updatePlayerState(lastReceivedState);
+                return true;
+            }
+            authError.innerText = data.error || 'Неверный пароль';
+            authError.style.display = 'block';
+            authOverlay.style.display = 'flex';
+            return false;
+        } catch {
+            authError.innerText = 'Ошибка соединения с сервером';
+            authError.style.display = 'block';
+            authOverlay.style.display = 'flex';
+            return false;
+        }
+    }
+
+    const savedKey = new URLSearchParams(window.location.search).get('key') || localStorage.getItem('streamer_key');
+    if (savedKey) verifyKey(savedKey);
+    else authOverlay.style.display = 'flex';
+
+    authForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        authError.style.display = 'none';
+        await verifyKey(authPasswordInput.value);
+    });
+    document.getElementById('btnLogout').addEventListener('click', () => {
+        localStorage.removeItem('streamer_key');
+        location.reload();
+    });
+    document.getElementById('btnChangePassword').addEventListener('click', async () => {
+        const newPassword = prompt('Введите новый пароль (минимум 4 символа):');
+        if (!newPassword) return;
+        try {
+            const res = await fetch('/api/auth/change-key', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ currentKey: streamerAuthKey, newKey: newPassword })
+            });
+            const data = await res.json();
+            if (res.ok) {
+                alert('Пароль успешно изменен');
+                streamerAuthKey = newPassword;
+                localStorage.setItem('streamer_key', newPassword);
+            } else { alert('Ошибка: ' + (data.error || 'Не удалось изменить пароль')); }
+        } catch { alert('Ошибка сети при смене пароля'); }
+    });
+    function copyToClipboard(text) {
+        navigator.clipboard.writeText(text).then(() => alert('Ссылка скопирована'));
+    }
+    function formatTime(s) {
+        if (!s || isNaN(s)) return '00:00';
+        const m = Math.floor(s / 60), sec = Math.floor(s % 60);
+        return `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+    }
+
+    const panelFallbackAudio = document.getElementById('panelFallbackAudio');
+    const fallbackVisualBox = document.getElementById('fallbackVisualBox');
+    let isUsingFallbackAudio = false;
+
+    // ─── YouTube IFrame Player ────────────────────────────────────────
+    window.onYouTubeIframeAPIReady = function () {
+        ytPlayer = new YT.Player('ytPlayerEl', {
+            height: '100%', width: '100%',
+            playerVars: {
+                autoplay: 0,
+                controls: 1,
+                modestbranding: 1,
+                rel: 0,
+                enablejsapi: 1,
+                origin: window.location.origin
+            },
+            events: {
+                onReady: onPlayerReady,
+                onStateChange: onPlayerStateChange,
+                onError: onPlayerError
+            }
+        });
+    };
+
+    function onPlayerError(event) {
+        console.warn('YouTube Player Error:', event.data);
+        let errorMsg = 'Не удалось воспроизвести видео (ошибка YouTube)';
+        if (event.data === 101 || event.data === 150) {
+            errorMsg = 'Автор или правообладатель музыки запретил встраивание этого видео на сторонних сайтах (код 150/101).';
+        } else if (event.data === 100) {
+            errorMsg = 'Видео не найдено или удалено на YouTube (код 100)';
+        }
+        alert(errorMsg);
+    }
+
+    let localProgressInterval = null;
+    let lastTrackedTime = -1;
+    let lastPlayerWasPlaying = false;
+
+    function onPlayerReady() {
+        isYtReady = true;
+        ytPlayer.setVolume(Number(localVolumeSlider.value));
+
+        // Start local progress tracker — drives scrubber + detects native seek/pause/play
+        startLocalProgressTracker();
+
+        // If we already know what track to play — load it now
+        if (pendingLoad) {
+            executeLoad(pendingLoad.videoId, pendingLoad.startSeconds);
+            pendingLoad = null;
+        } else if (lastReceivedState && streamerAuthKey && lastReceivedState.currentTrack) {
+            executeLoad(lastReceivedState.currentTrack.id, lastReceivedState.currentTime || 0);
+        }
+    }
+
+    function startLocalProgressTracker() {
+        if (localProgressInterval) clearInterval(localProgressInterval);
+        localProgressInterval = setInterval(() => {
+            let ct = 0;
+            let dur = 0;
+            let isNowPlaying = false;
+            let isNowPaused = false;
+
+            if (isUsingFallbackAudio && panelFallbackAudio) {
+                ct = panelFallbackAudio.currentTime || 0;
+                dur = panelFallbackAudio.duration || 0;
+                isNowPlaying = !panelFallbackAudio.paused && !panelFallbackAudio.ended;
+                isNowPaused = panelFallbackAudio.paused;
+            } else if (isYtReady && ytPlayer && typeof ytPlayer.getCurrentTime === 'function') {
+                ct = ytPlayer.getCurrentTime() || 0;
+                dur = ytPlayer.getDuration() || 0;
+                const playerState = ytPlayer.getPlayerState();
+                isNowPlaying = playerState === YT.PlayerState.PLAYING;
+                isNowPaused = playerState === YT.PlayerState.PAUSED;
+            } else {
+                return;
+            }
+
+            // Drive the custom scrubber from local player position
+            if (dur > 0) {
+                currentDuration = dur;
+                timeCurrent.innerText = formatTime(ct);
+                timeTotal.innerText = formatTime(dur);
+                const pct = Math.min(100, Math.max(0, (ct / dur) * 100));
+                scrubberFill.style.width = `${pct}%`;
+            }
+
+            // Detect native play/pause toggle and sync to widget
+            if (isNowPlaying && !lastPlayerWasPlaying) {
+                playIcon.style.display = 'none';
+                pauseIcon.style.display = 'block';
+                autoplayOverlay.style.display = 'none';
+                if (streamerAuthKey) {
+                    socket.emit('control_seek', { time: ct, authKey: streamerAuthKey });
+                    socket.emit('control_play_pause_force', { isPlaying: true, authKey: streamerAuthKey });
+                }
+            } else if (isNowPaused && lastPlayerWasPlaying) {
+                playIcon.style.display = 'block';
+                pauseIcon.style.display = 'none';
+                if (streamerAuthKey) {
+                    socket.emit('control_play_pause_force', { isPlaying: false, authKey: streamerAuthKey });
+                }
+            }
+
+            // Detect seek via native YouTube scrubber (jump > 2.5s from expected position)
+            if (lastTrackedTime >= 0 && isNowPlaying && !isUsingFallbackAudio) {
+                const expectedTime = lastTrackedTime + 0.2; // 200ms interval
+                const jump = Math.abs(ct - expectedTime);
+                if (jump > 2.5) {
+                    if (streamerAuthKey) {
+                        socket.emit('control_seek', { time: ct, authKey: streamerAuthKey });
+                    }
+                }
+            }
+
+            lastTrackedTime = ct;
+            lastPlayerWasPlaying = isNowPlaying;
+        }, 200);
+    }
+
+    function onPlayerStateChange(event) {
+        if (event.data === YT.PlayerState.PLAYING) {
+            autoplayOverlay.style.display = 'none';
+        }
+    }
+
+    // Actually load + play a videoId at a given seek position
+    function executeLoad(videoId, startSeconds) {
+        isUsingFallbackAudio = false;
+        fallbackVisualBox.style.display = 'none';
+        panelFallbackAudio.pause();
+        panelFallbackAudio.src = '';
+
+        if (!isYtReady || !ytPlayer) {
+            pendingLoad = { videoId, startSeconds };
+            return;
+        }
+
+        currentLoadedId = videoId;
+        lastTrackedTime = startSeconds || 0;
+        ytPlayer.setVolume(Number(localVolumeSlider.value));
+
+        ytPlayer.loadVideoById({
+            videoId,
+            startSeconds: startSeconds || 0,
+            suggestedQuality: 'small'
+        });
+
+        // Try to play — if blocked by browser, show click overlay
+        const playResult = ytPlayer.playVideo();
+        if (playResult && typeof playResult.then === 'function') {
+            playResult.catch(() => {
+                autoplayOverlay.style.display = 'flex';
+            });
+        }
+
+        // Also detect if player stays in UNSTARTED after 1.5s → show overlay
+        setTimeout(() => {
+            if (!isUsingFallbackAudio && ytPlayer && ytPlayer.getPlayerState() === YT.PlayerState.UNSTARTED) {
+                autoplayOverlay.style.display = 'flex';
+            }
+        }, 1500);
+    }
+
+    // Called when user clicks the "Нажмите чтобы слушать" overlay
+    function userStartPlayback() {
+        autoplayOverlay.style.display = 'none';
+        if (isUsingFallbackAudio && panelFallbackAudio) {
+            panelFallbackAudio.volume = Number(localVolumeSlider.value) / 100;
+            panelFallbackAudio.play();
+        } else if (isYtReady && ytPlayer) {
+            ytPlayer.unMute();
+            ytPlayer.setVolume(Number(localVolumeSlider.value));
+            ytPlayer.playVideo();
+        }
+    }
+
+    // ─── Socket Events ─────────────────────────────────────────────────
+    socket.on('state_update', (serverState) => {
+        lastReceivedState = serverState;
+        if (streamerAuthKey) updatePlayerState(serverState);
+        renderQueue(serverState.queue);
+        renderHistory(serverState.history);
+    });
+
+    // Progress pushed from widget (the master) → update scrubber in panel
+    socket.on('progress_update', (data) => {
+        if (!data || !data.duration) return;
+        currentDuration = data.duration;
+        timeCurrent.innerText = formatTime(data.currentTime);
+        timeTotal.innerText = formatTime(data.duration);
+        const pct = Math.min(100, Math.max(0, (data.currentTime / data.duration) * 100));
+        scrubberFill.style.width = `${pct}%`;
+    });
+
+    socket.on('command_play_pause', (isPlaying) => {
+        if (isUsingFallbackAudio && panelFallbackAudio) {
+            if (isPlaying) panelFallbackAudio.play().catch(() => {});
+            else panelFallbackAudio.pause();
+        } else if (isYtReady && ytPlayer) {
+            if (isPlaying) ytPlayer.playVideo();
+            else ytPlayer.pauseVideo();
+        }
+    });
+
+    socket.on('command_seek', (seconds) => {
+        if (isUsingFallbackAudio && panelFallbackAudio) {
+            panelFallbackAudio.currentTime = seconds;
+        } else if (isYtReady && ytPlayer) {
+            ytPlayer.seekTo(seconds, true);
+        }
+    });
+
+    socket.on('command_set_volume', (vol) => {
+        volumeSlider.value = vol;
+        volumeValue.innerText = `${vol}%`;
+        localStorage.setItem('streamer_volume', vol);
+    });
+
+    function updatePlayerState(state) {
+        if (state.volume !== undefined) {
+            volumeSlider.value = state.volume;
+            volumeValue.innerText = `${state.volume}%`;
+            localStorage.setItem('streamer_volume', state.volume);
+        }
+
+        const track = state.currentTrack;
+
+        if (!track) {
+            currentTitle.innerText = 'Очередь пуста';
+            currentMeta.innerText = 'Ожидание новых заказов...';
+            isUsingFallbackAudio = false;
+            fallbackVisualBox.style.display = 'none';
+            panelFallbackAudio.pause();
+            panelFallbackAudio.src = '';
+            if (isYtReady && ytPlayer) ytPlayer.stopVideo();
+            currentLoadedId = null;
+            currentDuration = 0;
+            pendingLoad = null;
+            autoplayOverlay.style.display = 'none';
+            scrubberFill.style.width = '0%';
+            timeCurrent.innerText = '00:00';
+            timeTotal.innerText = '00:00';
+            playIcon.style.display = 'block';
+            pauseIcon.style.display = 'none';
+            return;
+        }
+
+        currentTitle.innerText = track.title;
+        currentMeta.innerText = `Заказал: ${track.requestedBy}`;
+
+        // Restore scrubber position from server state
+        if (state.duration > 0) {
+            currentDuration = state.duration;
+            timeCurrent.innerText = formatTime(state.currentTime);
+            timeTotal.innerText = formatTime(state.duration);
+            const pct = Math.min(100, Math.max(0, (state.currentTime / state.duration) * 100));
+            scrubberFill.style.width = `${pct}%`;
+        }
+
+        // Load new track if changed
+        if (track.id !== currentLoadedId) {
+            executeLoad(track.id, state.currentTime || 0);
+        }
+
+        if (state.isPlaying) {
+            playIcon.style.display = 'none';
+            pauseIcon.style.display = 'block';
+        } else {
+            playIcon.style.display = 'block';
+            pauseIcon.style.display = 'none';
+        }
+    }
+
+    // ─── Controls ──────────────────────────────────────────────────────
+    localVolumeSlider.addEventListener('input', (e) => {
+        const vol = Number(e.target.value);
+        localVolumeValue.innerText = `${vol}%`;
+        localStorage.setItem('panel_local_volume', vol);
+        panelFallbackAudio.volume = vol / 100;
+        if (isYtReady && ytPlayer && typeof ytPlayer.setVolume === 'function') {
+            ytPlayer.setVolume(vol);
+        }
+    });
+
+    scrubberContainer.addEventListener('click', (e) => {
+        if (!currentDuration) return;
+        const rect = scrubberContainer.getBoundingClientRect();
+        const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        const seekTime = ratio * currentDuration;
+        if (isUsingFallbackAudio && panelFallbackAudio) {
+            panelFallbackAudio.currentTime = seekTime;
+        } else if (isYtReady && ytPlayer) {
+            ytPlayer.seekTo(seekTime, true);
+        }
+        if (streamerAuthKey) socket.emit('control_seek', { time: seekTime, authKey: streamerAuthKey });
+    });
+
+    btnPlayPause.addEventListener('click', () => {
+        if (streamerAuthKey) socket.emit('control_play_pause', streamerAuthKey);
+    });
+    btnSkip.addEventListener('click', () => {
+        if (streamerAuthKey) socket.emit('control_skip', streamerAuthKey);
+    });
+    volumeSlider.addEventListener('input', (e) => {
+        const vol = Number(e.target.value);
+        volumeValue.innerText = `${vol}%`;
+        localStorage.setItem('streamer_volume', vol);
+        if (streamerAuthKey) socket.emit('control_set_volume', { volume: vol, authKey: streamerAuthKey });
+    });
+    btnClearQueue.addEventListener('click', () => {
+        if (!streamerAuthKey) return;
+        if (confirm('Очистить всю очередь заказов?')) socket.emit('control_clear_queue', streamerAuthKey);
+    });
+
+    // ─── Queue & History ───────────────────────────────────────────────
+    function renderQueue(queue) {
+        queueBadge.innerText = queue ? queue.length : 0;
+        if (!queue || queue.length === 0) {
+            adminQueueList.innerHTML = '<li class="empty-state"><p>В очереди пока нет треков</p></li>';
+            return;
+        }
+        adminQueueList.innerHTML = queue.map((item, i) => `
+            <li class="queue-item">
+                <img class="queue-thumb" src="${item.thumbnail}" alt="thumb" style="cursor:pointer;" onclick="window.open('https://www.youtube.com/watch?v=${item.id}', '_blank')" title="Открыть на YouTube">
+                <div class="queue-info" style="min-width:0;overflow:hidden;cursor:pointer;" onclick="window.open('https://www.youtube.com/watch?v=${item.id}', '_blank')" title="Открыть на YouTube">
+                    <div class="queue-track-title">${item.title}</div>
+                    <div class="queue-track-meta">Заказал: ${item.requestedBy}</div>
+                </div>
+                <div style="flex-shrink:0;">
+                    <button onclick="removeTrack('${item.orderId}')"
+                        title="Удалить из очереди"
+                        style="
+                            background: rgba(235,4,0,0.12);
+                            border: 1px solid rgba(235,4,0,0.25);
+                            color: #ff5e5b;
+                            width: 36px; height: 36px;
+                            border-radius: 10px;
+                            display: flex; align-items: center; justify-content: center;
+                            cursor: pointer;
+                            transition: all 0.2s;
+                            flex-shrink: 0;
+                        "
+                        onmouseover="this.style.background='rgba(235,4,0,0.3)';this.style.borderColor='rgba(235,4,0,0.5)';this.style.color='white';this.style.transform='scale(1.08)'"
+                        onmouseout="this.style.background='rgba(235,4,0,0.12)';this.style.borderColor='rgba(235,4,0,0.25)';this.style.color='#ff5e5b';this.style.transform='scale(1)'">
+                        <svg width="17" height="17" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                    </button>
+                </div>
+            </li>
+        `).join('');
+    }
+    function renderHistory(history) {
+        if (!history || history.length === 0) {
+            historyList.innerHTML = '<li class="empty-state"><p>История пуста</p></li>';
+            return;
+        }
+        historyList.innerHTML = history.map(item => `
+            <li class="queue-item">
+                <img class="queue-thumb" src="${item.thumbnail}" alt="thumb" style="opacity:0.65;cursor:pointer;" onclick="window.open('https://www.youtube.com/watch?v=${item.id}', '_blank')" title="Открыть на YouTube">
+                <div class="queue-info" style="min-width:0;overflow:hidden;cursor:pointer;" onclick="window.open('https://www.youtube.com/watch?v=${item.id}', '_blank')" title="Открыть на YouTube">
+                    <div class="queue-track-title" style="opacity:0.85;">${item.title}</div>
+                    <div class="queue-track-meta"><span>Заказал: ${item.requestedBy}</span></div>
+                </div>
+                <div style="display:flex;gap:6px;flex-shrink:0;">
+                    <!-- Replay: purple, like play-btn -->
+                    <button onclick="replayFromHistory('${item.orderId}')"
+                        title="Воспроизвести сейчас (пропустить текущий)"
+                        style="
+                            background: var(--accent-purple);
+                            border: none;
+                            color: white;
+                            width: 36px; height: 36px;
+                            border-radius: 10px;
+                            display: flex; align-items: center; justify-content: center;
+                            cursor: pointer;
+                            box-shadow: 0 3px 12px rgba(145,70,255,0.45);
+                            transition: all 0.2s;
+                            flex-shrink: 0;
+                        "
+                        onmouseover="this.style.background='#a35eff';this.style.transform='scale(1.08)'"
+                        onmouseout="this.style.background='var(--accent-purple)';this.style.transform='scale(1)'">
+                        <svg width="17" height="17" fill="currentColor" viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
+                    </button>
+                    <!-- Add to queue: dark, like ctrl-btn -->
+                    <button onclick="addFromHistory('${item.orderId}')"
+                        title="Добавить в конец очереди"
+                        style="
+                            background: var(--bg-card-hover);
+                            border: 1px solid var(--border-color);
+                            color: white;
+                            width: 36px; height: 36px;
+                            border-radius: 10px;
+                            display: flex; align-items: center; justify-content: center;
+                            cursor: pointer;
+                            transition: all 0.2s;
+                            flex-shrink: 0;
+                        "
+                        onmouseover="this.style.background='var(--accent-purple)';this.style.borderColor='var(--accent-purple)';this.style.transform='scale(1.08)'"
+                        onmouseout="this.style.background='var(--bg-card-hover)';this.style.borderColor='var(--border-color)';this.style.transform='scale(1)'">
+                        <svg width="17" height="17" fill="currentColor" viewBox="0 0 24 24"><path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zm4 8v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zM2 16h8v-2H2v2z"/></svg>
+                    </button>
+                </div>
+            </li>
+        `).join('');
+    }
+    function removeTrack(orderId) {
+        if (streamerAuthKey) socket.emit('control_remove_track', { orderId, authKey: streamerAuthKey });
+    }
+    function replayFromHistory(orderId) {
+        if (streamerAuthKey) socket.emit('control_replay_from_history', { orderId, authKey: streamerAuthKey });
+    }
+    function addFromHistory(orderId) {
+        if (streamerAuthKey) socket.emit('control_add_from_history', { orderId, authKey: streamerAuthKey });
+    }
+</script>
+</body>
+</html>

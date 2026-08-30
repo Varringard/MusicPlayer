@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Sensitive Configuration & Keys
+config.json
+ssl/
+*.pem
+*.key
+*.crt
+
+# Runtime State & Cache
+state.json
+cache/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS & Editor Files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
