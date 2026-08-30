@@ -393,7 +393,8 @@
     let isUsingFallbackAudio = false;
 
     // ─── YouTube IFrame Player ────────────────────────────────────────
-    window.onYouTubeIframeAPIReady = function () {
+    function initYouTube() {
+        if (ytPlayer) return;
         ytPlayer = new YT.Player('ytPlayerEl', {
             height: '100%', width: '100%',
             playerVars: {
@@ -410,17 +411,40 @@
                 onError: onPlayerError
             }
         });
-    };
+    }
+
+    if (window.YT && window.YT.Player && window.YT.loaded) {
+        initYouTube();
+    } else {
+        window.onYouTubeIframeAPIReady = initYouTube;
+    }
+
+    function switchToFallbackAudio(videoId, seekTo) {
+        if (!videoId) return;
+        isUsingFallbackAudio = true;
+        if (isYtReady && ytPlayer && typeof ytPlayer.stopVideo === 'function') {
+            try { ytPlayer.stopVideo(); } catch (e) {}
+        }
+        panelFallbackAudio.src = `/api/stream/${videoId}`;
+        panelFallbackAudio.currentTime = seekTo || 0;
+        panelFallbackAudio.volume = Number(localVolumeSlider.value) / 100;
+
+        fallbackVisualBox.style.display = 'flex';
+        if (lastReceivedState && lastReceivedState.currentTrack && lastReceivedState.currentTrack.thumbnailHigh) {
+            fallbackVisualBox.style.backgroundImage = `linear-gradient(rgba(0,0,0,0.65), rgba(0,0,0,0.85)), url('${lastReceivedState.currentTrack.thumbnailHigh}')`;
+        }
+
+        panelFallbackAudio.play().catch(() => {
+            autoplayOverlay.style.display = 'flex';
+        });
+    }
 
     function onPlayerError(event) {
         console.warn('YouTube Player Error:', event.data);
-        let errorMsg = 'Не удалось воспроизвести видео (ошибка YouTube)';
-        if (event.data === 101 || event.data === 150) {
-            errorMsg = 'Автор или правообладатель музыки запретил встраивание этого видео на сторонних сайтах (код 150/101).';
-        } else if (event.data === 100) {
-            errorMsg = 'Видео не найдено или удалено на YouTube (код 100)';
+        if (currentLoadedId) {
+            console.log('Switching to direct audio stream fallback via yt-dlp...');
+            switchToFallbackAudio(currentLoadedId, lastTrackedTime);
         }
-        alert(errorMsg);
     }
 
     let localProgressInterval = null;
@@ -511,6 +535,9 @@
     function onPlayerStateChange(event) {
         if (event.data === YT.PlayerState.PLAYING) {
             autoplayOverlay.style.display = 'none';
+        } else if (event.data === YT.PlayerState.CUED) {
+            // Autoplay blocked by browser policy
+            autoplayOverlay.style.display = 'flex';
         }
     }
 
@@ -536,23 +563,22 @@
             suggestedQuality: 'small'
         });
 
-        // Try to play — if blocked by browser, show click overlay
-        const playResult = ytPlayer.playVideo();
-        if (playResult && typeof playResult.then === 'function') {
-            playResult.catch(() => {
-                autoplayOverlay.style.display = 'flex';
-            });
-        }
+        try {
+            ytPlayer.playVideo();
+        } catch (e) {}
 
-        // Also detect if player stays in UNSTARTED after 1.5s → show overlay
+        // If playback blocked by browser autoplay policy, show overlay
         setTimeout(() => {
-            if (!isUsingFallbackAudio && ytPlayer && ytPlayer.getPlayerState() === YT.PlayerState.UNSTARTED) {
-                autoplayOverlay.style.display = 'flex';
+            if (!isUsingFallbackAudio && ytPlayer && typeof ytPlayer.getPlayerState === 'function') {
+                const s = ytPlayer.getPlayerState();
+                if (s !== 1 && s !== 3) {
+                    autoplayOverlay.style.display = 'flex';
+                }
             }
-        }, 1500);
+        }, 1200);
     }
 
-    // Called when user clicks the "Нажмите чтобы слушать" overlay
+    // Called when user clicks the "Нажмите чтобы слушать" overlay or video box
     function userStartPlayback() {
         autoplayOverlay.style.display = 'none';
         if (isUsingFallbackAudio && panelFallbackAudio) {
@@ -564,6 +590,16 @@
             ytPlayer.playVideo();
         }
     }
+
+    document.getElementById('videoBox').addEventListener('click', (e) => {
+        if (e.target.closest('#autoplayOverlay')) return;
+        if (!isUsingFallbackAudio && ytPlayer && typeof ytPlayer.getPlayerState === 'function') {
+            const s = ytPlayer.getPlayerState();
+            if (s !== 1) {
+                userStartPlayback();
+            }
+        }
+    });
 
     // ─── Socket Events ─────────────────────────────────────────────────
     socket.on('state_update', (serverState) => {

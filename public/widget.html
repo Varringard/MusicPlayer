@@ -93,7 +93,8 @@
         }
 
         // ─── YouTube IFrame API ──────────────────────────────────────
-        window.onYouTubeIframeAPIReady = function () {
+        function initYouTube() {
+            if (ytPlayer) return;
             ytPlayer = new YT.Player('obsYtPlayer', {
                 height: '90',
                 width: '160',
@@ -129,7 +130,13 @@
                     }
                 }
             });
-        };
+        }
+
+        if (window.YT && window.YT.Player && window.YT.loaded) {
+            initYouTube();
+        } else {
+            window.onYouTubeIframeAPIReady = initYouTube;
+        }
 
         function loadTrack(track, seekTo) {
             if (!track || !track.id) return;
