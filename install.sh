@@ -66,6 +66,27 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
+# Функция для чтения ввода даже при выполнении через curl | bash
+prompt_input() {
+    local prompt_text="$1"
+    local var_name="$2"
+    local default_val="$3"
+    local res=""
+
+    if [ -t 0 ]; then
+        read -rp "$prompt_text" res
+    elif [ -e /dev/tty ]; then
+        read -rp "$prompt_text" res < /dev/tty
+    else
+        read -rp "$prompt_text" res
+    fi
+
+    if [ -z "$res" ]; then
+        res="$default_val"
+    fi
+    eval "$var_name=\"\$res\""
+}
+
 # 3. Интерактивный ввод при отсутствии параметров
 if [ -z "$DOMAIN" ]; then
     if [ "$NON_INTERACTIVE" = true ]; then
@@ -73,7 +94,7 @@ if [ -z "$DOMAIN" ]; then
         exit 1
     fi
     echo -e "${YELLOW}Введите ваше доменное имя (например: stream.mydomain.ru или myname.duckdns.org):${NC}"
-    read -rp "Домен: " DOMAIN
+    prompt_input "Домен: " DOMAIN ""
     DOMAIN=$(echo "$DOMAIN" | tr -d ' ' | tr '[:upper:]' '[:lower:]')
 fi
 
@@ -87,10 +108,7 @@ if [ -z "$EMAIL" ]; then
         EMAIL="admin@$DOMAIN"
     else
         echo -e "${YELLOW}Введите ваш email для Let's Encrypt (для уведомлений об истечении сертификата):${NC}"
-        read -rp "Email (или нажмите Enter для admin@$DOMAIN): " EMAIL
-        if [ -z "$EMAIL" ]; then
-            EMAIL="admin@$DOMAIN"
-        fi
+        prompt_input "Email (или нажмите Enter для admin@$DOMAIN): " EMAIL "admin@$DOMAIN"
     fi
 fi
 
@@ -134,13 +152,24 @@ echo -e "${GREEN}✓ yt-dlp доступен в /usr/local/bin/yt-dlp.${NC}"
 # 6. Копирование и развертывание проекта в /opt/musicplayer
 echo ""
 echo -e "${BLUE}[4/7] Подготовка файлов приложения в $APP_DIR...${NC}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
 
 mkdir -p "$APP_DIR"
 
-if [ "$SCRIPT_DIR" != "$APP_DIR" ]; then
-    echo -e "Копирование файлов из $SCRIPT_DIR в $APP_DIR..."
-    rsync -av --exclude='node_modules' --exclude='.git' --exclude='ssl' --exclude='cache' "$SCRIPT_DIR/" "$APP_DIR/"
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/server.js" ]; then
+    if [ "$SCRIPT_DIR" != "$APP_DIR" ]; then
+        echo -e "Копирование локальных файлов из $SCRIPT_DIR в $APP_DIR..."
+        rsync -av --exclude='node_modules' --exclude='.git' --exclude='ssl' --exclude='cache' "$SCRIPT_DIR/" "$APP_DIR/"
+    fi
+else
+    echo -e "${YELLOW}Загрузка проекта с GitHub в $APP_DIR...${NC}"
+    if [ -d "$APP_DIR/.git" ]; then
+        echo -e "Обновление существующего репозитория..."
+        cd "$APP_DIR" && git pull || true
+    else
+        rm -rf "${APP_DIR:?}"/*
+        git clone https://github.com/Varringard/MusicPlayer.git "$APP_DIR"
+    fi
 fi
 
 cd "$APP_DIR"
