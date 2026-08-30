@@ -122,9 +122,10 @@ menu_ssl() {
     echo "2) Принудительно продлить сертификат (certbot renew --force-renewal)"
     echo "3) Проверить статус сертификатов (certbot certificates)"
     echo "4) Тестовая проверка автопродления (dry-run)"
+    echo -e "5) ${YELLOW}${BOLD}🦆 Настроить DuckDNS (авто-IP каждые 5 мин + SSL БЕЗ 80 порта)${NC}"
     echo "0) Назад в главное меню"
     echo ""
-    read -rp "Выберите действие [0-4]: " choice
+    read -rp "Выберите действие [0-5]: " choice
 
     case $choice in
         1)
@@ -155,6 +156,116 @@ menu_ssl() {
         4)
             echo -e "\n${YELLOW}Тестирование автопродления (dry-run)...${NC}"
             certbot renew --dry-run
+            pause_key
+            ;;
+        5)
+            echo -e "\n${CYAN}${BOLD}=== Настройка DuckDNS (Авто-IP + SSL без открытого 80 порта) ===${NC}\n"
+            read -rp "Введите ваш домен [$domain]: " input_domain
+            input_domain=${input_domain:-$domain}
+            subdomain=$(echo "$input_domain" | sed 's/\.duckdns\.org//')
+
+            current_token=$(get_config_val "duckdnsToken")
+            read -rp "Введите ваш DuckDNS Token [$current_token]: " input_token
+            input_token=${input_token:-$current_token}
+
+            if [ -z "$input_token" ]; then
+                echo -e "${RED}[ОШИБКА] Токен DuckDNS не может быть пустым!${NC}"
+                pause_key
+                return
+            fi
+
+            # Проверяем токен
+            echo -e "\n${YELLOW}Проверка токена через DuckDNS API...${NC}"
+            check_res=$(curl -s "https://www.duckdns.org/update?domains=${subdomain}&token=${input_token}&ip=")
+            if [ "$check_res" != "OK" ]; then
+                echo -e "${RED}Ошибка ответа от DuckDNS: $check_res. Проверьте правильность домена и токена.${NC}"
+                pause_key
+                return
+            fi
+            echo -e "${GREEN}✓ Связь с DuckDNS успешна! (IP синхронизирован)${NC}"
+
+            # Сохраняем токен и домен в config.json
+            set_config_val "duckdnsToken" "$input_token"
+            set_config_val "domain" "$input_domain"
+
+            # 1. Настраиваем cron на автообновление динамического IP каждые 5 минут
+            echo -e "\n${YELLOW}Настройка автообновления динамического IP каждые 5 минут...${NC}"
+            cat <<EOF > /etc/cron.d/duckdns
+*/5 * * * * root curl -s "https://www.duckdns.org/update?domains=${subdomain}&token=${input_token}&ip=" >/dev/null 2>&1
+EOF
+            chmod 644 /etc/cron.d/duckdns
+            echo -e "${GREEN}✓ Автообновление динамического IP активировано (/etc/cron.d/duckdns)${NC}"
+
+            # 2. Выпуск SSL через DNS-01 Challenge
+            read -rp "Введите email для Let's Encrypt [admin@$input_domain]: " input_email
+            input_email=${input_email:-"admin@$input_domain"}
+
+            chmod +x "$APP_DIR/scripts/duckdns-auth.sh" 2>/dev/null || true
+            chmod +x "$APP_DIR/scripts/duckdns-cleanup.sh" 2>/dev/null || true
+
+            echo -e "\n${YELLOW}Запуск выпуска сертификата через DNS-запись DuckDNS (займет ~40 сек)...${NC}"
+            export DUCKDNS_TOKEN="$input_token"
+
+            if certbot certonly \
+                --manual \
+                --preferred-challenges dns \
+                --manual-auth-hook "$APP_DIR/scripts/duckdns-auth.sh" \
+                --manual-cleanup-hook "$APP_DIR/scripts/duckdns-cleanup.sh" \
+                -d "$input_domain" \
+                --non-interactive \
+                --agree-tos \
+                -m "$input_email"; then
+
+                echo -e "\n${GREEN}✓ SSL сертификат успешно получен без использования 80 порта!${NC}"
+
+                # Настраиваем Nginx с SSL
+                cat <<EOF > "$NGINX_CONF"
+map \$http_upgrade \$connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $input_domain;
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name $input_domain;
+
+    ssl_certificate /etc/letsencrypt/live/$input_domain/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$input_domain/privkey.pem;
+
+    client_max_body_size 25M;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
+
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+        proxy_buffering off;
+        proxy_cache_bypass \$http_upgrade;
+    }
+}
+EOF
+                nginx -t && systemctl reload nginx
+                echo -e "${GREEN}${BOLD}✓ Nginx успешно переключен на HTTPS! Сайт доступен по https://$input_domain/${NC}"
+            else
+                echo -e "${RED}Не удалось выпустить сертификат через DuckDNS. Проверьте логи: /var/log/letsencrypt/letsencrypt.log${NC}"
+            fi
             pause_key
             ;;
         *) ;;
