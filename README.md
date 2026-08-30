@@ -4,27 +4,31 @@
 
 ---
 
-## ⚡ Развертывание в LXC (Proxmox / Debian / Ubuntu) одним скриптом
+## ⚡ Развертывание в Proxmox VE и Linux
 
-Проект полностью оптимизирован для быстрой установки в чистый **LXC-контейнер** (Proxmox VE, Debian 12 или Ubuntu 22.04 / 24.04).
+### 🥇 Вариант 1: Proxmox VE Helper Script (Создание контейнера с нуля)
+Если у вас сервер с **Proxmox VE**, вы можете создать и настроить контейнер одной командой прямо в **Shell ноды Proxmox**:
 
-Скрипт `install.sh` автоматически:
-- Установит **Node.js 20 LTS**, **npm**, **Python 3**, **yt-dlp**, **Nginx** и **Certbot**;
-- Развернет приложение в каталог `/opt/musicplayer`;
-- Сконфигурирует **Nginx Reverse Proxy** с поддержкой WebSockets (Socket.IO);
-- Бесплатно выпустит и настроит **SSL-сертификат Let's Encrypt** по вашему домену с автопродлением;
-- Создаст и запустит системную службу **systemd** (`musicplayer.service`) для круглосуточной работы 24/7.
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Varringard/MusicPlayer/main/pve-install.sh)"
+```
 
-### 🚀 Установка одной командой в консоли контейнера:
+Скрипт в стиле официальных Proxmox Helper Scripts:
+1. Автоматически определит следующий свободный **CT ID** (например, `105`);
+2. Предложит оптимальные параметры (Debian 12, 1 vCPU, 1GB RAM, 4GB диск);
+3. Спросит ваш домен и email для сертификата;
+4. Скачает шаблон Debian 12, создаст контейнер, запустит его и сразу установит MusicPlayer с SSL и автозапуском!
 
-Вставьте команду в консоль чистого контейнера:
+---
+
+### 🥈 Вариант 2: Установка внутри готового контейнера (Debian / Ubuntu)
+Если контейнер уже создан, откройте его консоль и выполните:
+
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Varringard/MusicPlayer/main/install.sh)"
 ```
 
-Скрипт сам загрузит проект, установит всё окружение и запросит у вас домен и e-mail!
-
-> **Полный автомат без лишних вопросов (замените домен и почту на свои):**
+> **Полный автомат без лишних вопросов:**
 > ```bash
 > bash -c "$(curl -fsSL https://raw.githubusercontent.com/Varringard/MusicPlayer/main/install.sh)" -- -d music.mydomain.com -e myemail@example.com -k "МойПарольСтримера" -y
 > ```
