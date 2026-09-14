@@ -499,32 +499,14 @@
                 scrubberFill.style.width = `${pct}%`;
             }
 
-            // Detect native play/pause toggle and sync to widget
+            // Sync play/pause UI icon with actual player state
             if (isNowPlaying && !lastPlayerWasPlaying) {
                 playIcon.style.display = 'none';
                 pauseIcon.style.display = 'block';
                 autoplayOverlay.style.display = 'none';
-                if (streamerAuthKey) {
-                    socket.emit('control_seek', { time: ct, authKey: streamerAuthKey });
-                    socket.emit('control_play_pause_force', { isPlaying: true, authKey: streamerAuthKey });
-                }
             } else if (isNowPaused && lastPlayerWasPlaying) {
                 playIcon.style.display = 'block';
                 pauseIcon.style.display = 'none';
-                if (streamerAuthKey) {
-                    socket.emit('control_play_pause_force', { isPlaying: false, authKey: streamerAuthKey });
-                }
-            }
-
-            // Detect seek via native YouTube scrubber (jump > 2.5s from expected position)
-            if (lastTrackedTime >= 0 && isNowPlaying && !isUsingFallbackAudio) {
-                const expectedTime = lastTrackedTime + 0.2; // 200ms interval
-                const jump = Math.abs(ct - expectedTime);
-                if (jump > 2.5) {
-                    if (streamerAuthKey) {
-                        socket.emit('control_seek', { time: ct, authKey: streamerAuthKey });
-                    }
-                }
             }
 
             lastTrackedTime = ct;
