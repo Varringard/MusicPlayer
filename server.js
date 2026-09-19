@@ -266,10 +266,10 @@ function ensureAudioCached(videoId) {
             : (fs.existsSync('/usr/local/bin/yt-dlp') ? '/usr/local/bin/yt-dlp' : (fs.existsSync('/usr/bin/yt-dlp') ? '/usr/bin/yt-dlp' : 'python3 -m yt_dlp'));
 
         const targetTemplate = path.join(CACHE_DIR, `${videoId}.%(ext)s`);
-        const cmd = `${ytdlpBin} --no-warnings --no-playlist -f "ba" -x --audio-format mp3 --audio-quality 0 -o "${targetTemplate}" "https://www.youtube.com/watch?v=${videoId}"`;
+        const cmd = `${ytdlpBin} --no-warnings --no-playlist -f "ba" -o "${targetTemplate}" "https://www.youtube.com/watch?v=${videoId}"`;
 
         console.log(`[AudioCache] Downloading audio for ${videoId}...`);
-        exec(cmd, { timeout: 60000 }, (error, stdout, stderr) => {
+        exec(cmd, { timeout: 90000 }, (error, stdout, stderr) => {
             activeDownloads.delete(videoId);
             if (error) {
                 console.error(`[AudioCache] Download error for ${videoId}:`, error.message);
