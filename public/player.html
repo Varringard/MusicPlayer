@@ -567,6 +567,16 @@
                 pauseIcon.style.display = 'none';
             }
 
+            // Report progress as fallback if widget isn't sending
+            if (isNowPlaying && streamerAuthKey && socket && (!window._lastProgressEmit || Date.now() - window._lastProgressEmit > 500)) {
+                window._lastProgressEmit = Date.now();
+                socket.emit('player_progress', {
+                    currentTime: ct,
+                    duration: dur,
+                    authKey: streamerAuthKey
+                });
+            }
+
             lastTrackedTime = ct;
             lastPlayerWasPlaying = isNowPlaying;
         }, 200);
@@ -678,10 +688,19 @@
     socket.on('progress_update', (data) => {
         if (!data || !data.duration) return;
         currentDuration = data.duration;
-        timeCurrent.innerText = formatTime(data.currentTime);
-        timeTotal.innerText = formatTime(data.duration);
-        const pct = Math.min(100, Math.max(0, (data.currentTime / data.duration) * 100));
-        scrubberFill.style.width = `${pct}%`;
+
+        // Check if local player in this tab is actively playing audio
+        const isLocalPlaying = (isUsingFallbackAudio && panelFallbackAudio && !panelFallbackAudio.paused && !panelFallbackAudio.ended && panelFallbackAudio.currentTime > 0) ||
+                              (isYtReady && ytPlayer && typeof ytPlayer.getPlayerState === 'function' && ytPlayer.getPlayerState() === YT.PlayerState.PLAYING);
+
+        // Only update UI from remote widget if local player is NOT actively playing
+        // This prevents the scrubber from jumping back and forth between local audio and remote widget
+        if (!isLocalPlaying) {
+            timeCurrent.innerText = formatTime(data.currentTime);
+            timeTotal.innerText = formatTime(data.duration);
+            const pct = Math.min(100, Math.max(0, (data.currentTime / data.duration) * 100));
+            scrubberFill.style.width = `${pct}%`;
+        }
     });
 
     socket.on('command_play_pause', (isPlaying) => {

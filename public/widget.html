@@ -174,43 +174,10 @@
 
             currentTrackId = track.id;
             currentTrackOrderId = track.orderId;
-            isUsingFallbackAudio = false;
 
-            if (obsFallbackAudio) {
-                obsFallbackAudio.pause();
-                obsFallbackAudio.src = '';
-            }
-
-            if (!isYtReady || !ytPlayer) {
-                pendingTrack = { ...track, _seekTo: seekTo || 0 };
-                ytWatchdog = setTimeout(() => {
-                    if (!isYtReady && !isUsingFallbackAudio) {
-                        console.warn('[OBS Watchdog] YouTube API script not ready, using direct audio');
-                        switchToFallbackAudio(track, seekTo);
-                    }
-                }, 3500);
-                return;
-            }
-
-            ytPlayer.unMute();
-            ytPlayer.setVolume(currentVolume);
-            ytPlayer.loadVideoById({
-                videoId: track.id,
-                startSeconds: seekTo || 0,
-                suggestedQuality: 'small'
-            });
-            ytPlayer.playVideo();
-
-            // Watchdog: If playback doesn't start in 3.5s, switch to direct stream
-            ytWatchdog = setTimeout(() => {
-                if (!isUsingFallbackAudio && ytPlayer && typeof ytPlayer.getPlayerState === 'function') {
-                    const s = ytPlayer.getPlayerState();
-                    if (s !== 1) { // 1 = PLAYING
-                        console.warn('[OBS Watchdog] YouTube playback stalled in OBS, switching to direct stream');
-                        switchToFallbackAudio(track, seekTo);
-                    }
-                }
-            }, 3500);
+            // In OBS widget, we use direct audio stream immediately
+            // This guarantees zero lag, instant start, and no Russian YouTube DPI desync
+            switchToFallbackAudio(track, seekTo);
         }
 
         // ─── Progress Reporter — widget is the master source ─────────

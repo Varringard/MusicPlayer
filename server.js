@@ -413,10 +413,13 @@ io.on('connection', (socket) => {
         }
     });
 
+    let lastWidgetProgressTime = 0;
+
     // ─── WIDGET is the master audio source ───────────────────────────
     // Widget (always open in OBS) reports progress — server stores it
     socket.on('widget_progress', (data) => {
         if (data && data.widgetKey === config.widgetKey) {
+            lastWidgetProgressTime = Date.now();
             state.currentTime = data.currentTime || 0;
             state.duration = data.duration || 0;
             // Broadcast progress to everyone else (panel etc.)
@@ -441,12 +444,14 @@ io.on('connection', (socket) => {
     socket.on('player_progress', (data) => {
         if (data && data.authKey === config.streamerKey) {
             // Only update if widget hasn't reported recently (widget is preferred master)
-            state.currentTime = data.currentTime || 0;
-            state.duration = data.duration || 0;
-            socket.broadcast.emit('progress_update', {
-                currentTime: state.currentTime,
-                duration: state.duration
-            });
+            if (Date.now() - lastWidgetProgressTime > 2500) {
+                state.currentTime = data.currentTime || 0;
+                state.duration = data.duration || 0;
+                socket.broadcast.emit('progress_update', {
+                    currentTime: state.currentTime,
+                    duration: state.duration
+                });
+            }
         }
     });
 
