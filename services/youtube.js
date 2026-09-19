@@ -40,8 +40,8 @@ function getYtDlpBinary() {
 function getMetadataViaYtDlp(videoId) {
     return new Promise((resolve, reject) => {
         const bin = getYtDlpBinary();
-        const cmd = `${bin} --no-warnings --print "%(title)s///%(uploader)s" "https://www.youtube.com/watch?v=${videoId}"`;
-        exec(cmd, { timeout: 10000 }, (err, stdout, stderr) => {
+        const cmd = `${bin} --skip-download --no-cache-dir --no-warnings --print "%(title)s///%(uploader)s" "https://www.youtube.com/watch?v=${videoId}"`;
+        exec(cmd, { timeout: 25000 }, (err, stdout, stderr) => {
             if (err || !stdout || !stdout.trim()) return reject(err || new Error('Empty yt-dlp output'));
             const parts = stdout.trim().split('///');
             resolve({
