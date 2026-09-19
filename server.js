@@ -266,7 +266,7 @@ function ensureAudioCached(videoId) {
             : (fs.existsSync('/usr/local/bin/yt-dlp') ? '/usr/local/bin/yt-dlp' : (fs.existsSync('/usr/bin/yt-dlp') ? '/usr/bin/yt-dlp' : 'python3 -m yt_dlp'));
 
         const targetTemplate = path.join(CACHE_DIR, `${videoId}.%(ext)s`);
-        const cmd = `${ytdlpBin} --no-warnings --no-playlist -f "ba" -o "${targetTemplate}" "https://www.youtube.com/watch?v=${videoId}"`;
+        const cmd = `${ytdlpBin} --no-warnings --no-playlist --socket-timeout 10 -f "ba" -o "${targetTemplate}" "https://www.youtube.com/watch?v=${videoId}"`;
 
         console.log(`[AudioCache] Downloading audio for ${videoId}...`);
         exec(cmd, { timeout: 90000 }, (error, stdout, stderr) => {
@@ -302,7 +302,7 @@ function getDirectAudioUrl(videoId) {
         const ytdlpBin = process.platform === 'win32'
             ? 'python -m yt_dlp'
             : (fs.existsSync('/usr/local/bin/yt-dlp') ? '/usr/local/bin/yt-dlp' : (fs.existsSync('/usr/bin/yt-dlp') ? '/usr/bin/yt-dlp' : 'python3 -m yt_dlp'));
-        const cmd = `${ytdlpBin} --skip-download --no-warnings --no-cache-dir -f "ba/b" -g "https://www.youtube.com/watch?v=${videoId}"`;
+        const cmd = `${ytdlpBin} --skip-download --no-warnings --no-cache-dir --socket-timeout 10 -f "ba/b" -g "https://www.youtube.com/watch?v=${videoId}"`;
         exec(cmd, { timeout: 30000 }, (error, stdout, stderr) => {
             if (error) {
                 console.error(`yt-dlp error for ${videoId}:`, error.message);
