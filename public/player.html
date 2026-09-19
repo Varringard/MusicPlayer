@@ -483,8 +483,28 @@
         if (isYtReady && ytPlayer && typeof ytPlayer.stopVideo === 'function') {
             try { ytPlayer.stopVideo(); } catch (e) {}
         }
-        panelFallbackAudio.src = `/api/stream/${videoId}`;
-        panelFallbackAudio.currentTime = seekTo || 0;
+
+        const targetSrc = `/api/stream/${videoId}`;
+        const currentSrcPath = panelFallbackAudio.src ? new URL(panelFallbackAudio.src, window.location.origin).pathname : '';
+
+        if (currentSrcPath !== targetSrc) {
+            panelFallbackAudio.src = targetSrc;
+            const targetSeek = seekTo || 0;
+            const applySeek = () => {
+                if (targetSeek > 0) {
+                    try { panelFallbackAudio.currentTime = targetSeek; } catch (e) {}
+                }
+            };
+            if (panelFallbackAudio.readyState >= 1) {
+                applySeek();
+            } else {
+                panelFallbackAudio.addEventListener('loadedmetadata', applySeek, { once: true });
+                panelFallbackAudio.addEventListener('canplay', applySeek, { once: true });
+            }
+        } else if (seekTo !== undefined && Math.abs((panelFallbackAudio.currentTime || 0) - seekTo) > 1.5) {
+            panelFallbackAudio.currentTime = seekTo;
+        }
+
         panelFallbackAudio.volume = Number(localVolumeSlider.value) / 100;
 
         fallbackVisualBox.style.display = 'flex';
@@ -508,6 +528,7 @@
     let localProgressInterval = null;
     let lastTrackedTime = -1;
     let lastPlayerWasPlaying = false;
+    let lastServerProgressTime = 0;
 
     function onPlayerReady() {
         isYtReady = true;
@@ -548,8 +569,8 @@
                 return;
             }
 
-            // Drive the custom scrubber from local player position
-            if (dur > 0) {
+            // If we haven't received server master progress recently (>1500ms), drive scrubber locally
+            if (Date.now() - lastServerProgressTime > 1500 && dur > 0) {
                 currentDuration = dur;
                 timeCurrent.innerText = formatTime(ct);
                 timeTotal.innerText = formatTime(dur);
@@ -567,14 +588,16 @@
                 pauseIcon.style.display = 'none';
             }
 
-            // Report progress as fallback if widget isn't sending
-            if (isNowPlaying && streamerAuthKey && socket && (!window._lastProgressEmit || Date.now() - window._lastProgressEmit > 500)) {
-                window._lastProgressEmit = Date.now();
-                socket.emit('player_progress', {
-                    currentTime: ct,
-                    duration: dur,
-                    authKey: streamerAuthKey
-                });
+            // Only report fallback progress if server master hasn't reported for >3500ms (widget offline)
+            if (isNowPlaying && streamerAuthKey && socket && (Date.now() - lastServerProgressTime > 3500)) {
+                if (!window._lastProgressEmit || Date.now() - window._lastProgressEmit > 500) {
+                    window._lastProgressEmit = Date.now();
+                    socket.emit('player_progress', {
+                        currentTime: ct,
+                        duration: dur,
+                        authKey: streamerAuthKey
+                    });
+                }
             }
 
             lastTrackedTime = ct;
@@ -684,23 +707,25 @@
         renderHistory(serverState.history);
     });
 
-    // Progress pushed from widget (the master) → update scrubber in panel
+    // Progress pushed from widget (the master) → update scrubber & drift-correct panel audio
     socket.on('progress_update', (data) => {
         if (!data || !data.duration) return;
+        lastServerProgressTime = Date.now();
         currentDuration = data.duration;
 
-        // Check if local player in this tab is actively playing audio
-        const isLocalPlaying = (isUsingFallbackAudio && panelFallbackAudio && !panelFallbackAudio.paused && !panelFallbackAudio.ended && panelFallbackAudio.currentTime > 0) ||
-                              (isYtReady && ytPlayer && typeof ytPlayer.getPlayerState === 'function' && ytPlayer.getPlayerState() === YT.PlayerState.PLAYING);
-
-        // Only update UI from remote widget if local player is NOT actively playing
-        // This prevents the scrubber from jumping back and forth between local audio and remote widget
-        if (!isLocalPlaying) {
-            timeCurrent.innerText = formatTime(data.currentTime);
-            timeTotal.innerText = formatTime(data.duration);
-            const pct = Math.min(100, Math.max(0, (data.currentTime / data.duration) * 100));
-            scrubberFill.style.width = `${pct}%`;
+        // Drift correction: keep local panel audio locked to master OBS timeline
+        if (isUsingFallbackAudio && panelFallbackAudio && !panelFallbackAudio.paused && !panelFallbackAudio.ended && panelFallbackAudio.readyState >= 1) {
+            const drift = Math.abs((panelFallbackAudio.currentTime || 0) - data.currentTime);
+            if (drift > 1.2) {
+                try { panelFallbackAudio.currentTime = data.currentTime; } catch (e) {}
+            }
         }
+
+        // Always update the scrubber from master clock
+        timeCurrent.innerText = formatTime(data.currentTime);
+        timeTotal.innerText = formatTime(data.duration);
+        const pct = Math.min(100, Math.max(0, (data.currentTime / data.duration) * 100));
+        scrubberFill.style.width = `${pct}%`;
     });
 
     socket.on('command_play_pause', (isPlaying) => {

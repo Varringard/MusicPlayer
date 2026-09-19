@@ -114,8 +114,27 @@
                 try { ytPlayer.stopVideo(); } catch (e) {}
             }
             if (obsFallbackAudio) {
-                obsFallbackAudio.src = `/api/stream/${track.id}`;
-                obsFallbackAudio.currentTime = seekTo || 0;
+                const targetSrc = `/api/stream/${track.id}`;
+                const currentSrcPath = obsFallbackAudio.src ? new URL(obsFallbackAudio.src, window.location.origin).pathname : '';
+
+                if (currentSrcPath !== targetSrc) {
+                    obsFallbackAudio.src = targetSrc;
+                    const targetSeek = seekTo || 0;
+                    const applySeek = () => {
+                        if (targetSeek > 0) {
+                            try { obsFallbackAudio.currentTime = targetSeek; } catch (e) {}
+                        }
+                    };
+                    if (obsFallbackAudio.readyState >= 1) {
+                        applySeek();
+                    } else {
+                        obsFallbackAudio.addEventListener('loadedmetadata', applySeek, { once: true });
+                        obsFallbackAudio.addEventListener('canplay', applySeek, { once: true });
+                    }
+                } else if (seekTo !== undefined && Math.abs((obsFallbackAudio.currentTime || 0) - seekTo) > 1.5) {
+                    obsFallbackAudio.currentTime = seekTo;
+                }
+
                 obsFallbackAudio.volume = currentVolume / 100;
                 obsFallbackAudio.play().catch(e => console.warn('OBS audio play failed:', e));
             }

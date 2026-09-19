@@ -156,6 +156,10 @@ function playNextTrack() {
         state.isPlaying = true;
         state.currentTime = 0;
         state.duration = 0;
+        ensureAudioCached(state.currentTrack.id).catch(() => {});
+        if (state.queue.length > 0) {
+            ensureAudioCached(state.queue[0].id).catch(() => {});
+        }
     } else {
         state.currentTrack = null;
         state.isPlaying = false;
@@ -209,8 +213,82 @@ app.post('/api/auth/change-key', (req, res) => {
     return res.json({ success: true, message: 'Пароль успешно обновлен' });
 });
 
-// Fallback Direct Audio Stream URL Cache & Extractor via yt-dlp
+// Local Audio Disk Cache & Extractor via yt-dlp
+const CACHE_DIR = path.join(__dirname, 'cache');
+if (!fs.existsSync(CACHE_DIR)) {
+    try { fs.mkdirSync(CACHE_DIR, { recursive: true }); } catch (e) {}
+}
+
+const activeDownloads = new Map(); // videoId -> Promise<string>
 const audioUrlCache = new Map();
+
+function getCachedAudioPath(videoId) {
+    const mp3 = path.join(CACHE_DIR, `${videoId}.mp3`);
+    if (fs.existsSync(mp3) && fs.statSync(mp3).size > 10000) return mp3;
+    const webm = path.join(CACHE_DIR, `${videoId}.webm`);
+    if (fs.existsSync(webm) && fs.statSync(webm).size > 10000) return webm;
+    const m4a = path.join(CACHE_DIR, `${videoId}.m4a`);
+    if (fs.existsSync(m4a) && fs.statSync(m4a).size > 10000) return m4a;
+    return null;
+}
+
+function pruneOldCache() {
+    try {
+        const files = fs.readdirSync(CACHE_DIR).map(name => {
+            const fullPath = path.join(CACHE_DIR, name);
+            const stat = fs.statSync(fullPath);
+            return { fullPath, mtime: stat.mtimeMs, size: stat.size };
+        });
+
+        if (files.length > 60) {
+            files.sort((a, b) => a.mtime - b.mtime); // oldest first
+            const toDelete = files.slice(0, files.length - 50);
+            for (const f of toDelete) {
+                try { fs.unlinkSync(f.fullPath); } catch (e) {}
+            }
+        }
+    } catch (e) {
+        console.warn('[AudioCache] Prune error:', e.message);
+    }
+}
+
+function ensureAudioCached(videoId) {
+    const existing = getCachedAudioPath(videoId);
+    if (existing) return Promise.resolve(existing);
+
+    if (activeDownloads.has(videoId)) {
+        return activeDownloads.get(videoId);
+    }
+
+    const downloadPromise = new Promise((resolve, reject) => {
+        const ytdlpBin = process.platform === 'win32'
+            ? 'python -m yt_dlp'
+            : (fs.existsSync('/usr/local/bin/yt-dlp') ? '/usr/local/bin/yt-dlp' : (fs.existsSync('/usr/bin/yt-dlp') ? '/usr/bin/yt-dlp' : 'python3 -m yt_dlp'));
+
+        const targetTemplate = path.join(CACHE_DIR, `${videoId}.%(ext)s`);
+        const cmd = `${ytdlpBin} --no-warnings --no-playlist -f "ba" -x --audio-format mp3 --audio-quality 0 -o "${targetTemplate}" "https://www.youtube.com/watch?v=${videoId}"`;
+
+        console.log(`[AudioCache] Downloading audio for ${videoId}...`);
+        exec(cmd, { timeout: 60000 }, (error, stdout, stderr) => {
+            activeDownloads.delete(videoId);
+            if (error) {
+                console.error(`[AudioCache] Download error for ${videoId}:`, error.message);
+                return reject(error);
+            }
+            const cached = getCachedAudioPath(videoId);
+            if (cached) {
+                console.log(`[AudioCache] Successfully cached ${videoId} -> ${path.basename(cached)}`);
+                pruneOldCache();
+                resolve(cached);
+            } else {
+                reject(new Error('Audio file missing after download'));
+            }
+        });
+    });
+
+    activeDownloads.set(videoId, downloadPromise);
+    return downloadPromise;
+}
 
 function getDirectAudioUrl(videoId) {
     return new Promise((resolve, reject) => {
@@ -250,6 +328,30 @@ app.get('/api/stream/:videoId', async (req, res) => {
     }
 
     try {
+        // 1. Try local cached file first (fastest, immune to DPI drops, instant Range seeking)
+        let cachedFile = getCachedAudioPath(videoId);
+        if (!cachedFile) {
+            try {
+                cachedFile = await ensureAudioCached(videoId);
+            } catch (dlErr) {
+                console.warn(`[AudioStream] Disk cache download failed for ${videoId}, falling back to proxy:`, dlErr.message);
+            }
+        }
+
+        if (cachedFile && fs.existsSync(cachedFile)) {
+            const ext = path.extname(cachedFile).toLowerCase();
+            const contentType = ext === '.mp3' ? 'audio/mpeg' : (ext === '.m4a' ? 'audio/mp4' : 'audio/webm');
+            return res.sendFile(cachedFile, {
+                acceptRanges: true,
+                maxAge: 86400000,
+                headers: {
+                    'Content-Type': contentType,
+                    'Access-Control-Allow-Origin': '*'
+                }
+            });
+        }
+
+        // 2. Fallback to live stream proxy if cache failed
         const streamUrl = await getDirectAudioUrl(videoId);
         if (!streamUrl) {
             return res.status(404).send('Audio stream not available');
@@ -373,8 +475,8 @@ app.post('/api/request', async (req, res) => {
         broadcastState();
         saveState();
 
-        // Preload direct audio stream URL in background
-        getDirectAudioUrl(videoId).catch(() => {});
+        // Pre-cache audio file on disk immediately in background
+        ensureAudioCached(videoId).catch(e => console.warn('[PreCache Error]', e.message));
 
         io.emit('new_request_notification', track);
 
@@ -444,7 +546,7 @@ io.on('connection', (socket) => {
     socket.on('player_progress', (data) => {
         if (data && data.authKey === config.streamerKey) {
             // Only update if widget hasn't reported recently (widget is preferred master)
-            if (Date.now() - lastWidgetProgressTime > 2500) {
+            if (Date.now() - lastWidgetProgressTime > 4000) {
                 state.currentTime = data.currentTime || 0;
                 state.duration = data.duration || 0;
                 socket.broadcast.emit('progress_update', {
@@ -545,7 +647,7 @@ io.on('connection', (socket) => {
 
         broadcastState();
         saveState();
-        getDirectAudioUrl(track.id).catch(() => {});
+        ensureAudioCached(track.id).catch(() => {});
     });
 
     // Add from history back into the queue (at end)
@@ -572,6 +674,7 @@ io.on('connection', (socket) => {
 
         broadcastState();
         saveState();
+        ensureAudioCached(track.id).catch(() => {});
     });
 });
 
