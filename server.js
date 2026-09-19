@@ -224,8 +224,8 @@ function getDirectAudioUrl(videoId) {
         const ytdlpBin = process.platform === 'win32'
             ? 'python -m yt_dlp'
             : (fs.existsSync('/usr/local/bin/yt-dlp') ? '/usr/local/bin/yt-dlp' : (fs.existsSync('/usr/bin/yt-dlp') ? '/usr/bin/yt-dlp' : 'python3 -m yt_dlp'));
-        const cmd = `${ytdlpBin} -f "ba/b" -g "https://www.youtube.com/watch?v=${videoId}"`;
-        exec(cmd, { timeout: 15000 }, (error, stdout, stderr) => {
+        const cmd = `${ytdlpBin} --skip-download --no-warnings --no-cache-dir -f "ba/b" -g "https://www.youtube.com/watch?v=${videoId}"`;
+        exec(cmd, { timeout: 30000 }, (error, stdout, stderr) => {
             if (error) {
                 console.error(`yt-dlp error for ${videoId}:`, error.message);
                 return reject(error);
@@ -241,6 +241,80 @@ function getDirectAudioUrl(videoId) {
         });
     });
 }
+
+// Direct Audio Stream Proxy for browsers/OBS (bypasses YouTube iframe blocks & DPI throttling)
+app.get('/api/stream/:videoId', async (req, res) => {
+    const { videoId } = req.params;
+    if (!videoId || !/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
+        return res.status(400).send('Invalid video ID');
+    }
+
+    try {
+        const streamUrl = await getDirectAudioUrl(videoId);
+        if (!streamUrl) {
+            return res.status(404).send('Audio stream not available');
+        }
+
+        const https = require('https');
+        const http = require('http');
+        const client = streamUrl.startsWith('https') ? https : http;
+
+        const upstreamHeaders = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': '*/*'
+        };
+
+        if (req.headers.range) {
+            upstreamHeaders['Range'] = req.headers.range;
+        }
+
+        const proxyReq = client.get(streamUrl, { headers: upstreamHeaders }, (upstreamRes) => {
+            if (upstreamRes.statusCode === 403) {
+                // Expired or invalid signature -> clear cache so next attempt refreshes
+                audioUrlCache.delete(videoId);
+            }
+
+            res.status(upstreamRes.statusCode || 200);
+
+            const headersToForward = [
+                'content-type',
+                'content-length',
+                'content-range',
+                'accept-ranges',
+                'cache-control'
+            ];
+
+            for (const h of headersToForward) {
+                if (upstreamRes.headers[h]) {
+                    res.setHeader(h, upstreamRes.headers[h]);
+                }
+            }
+
+            if (!res.getHeader('accept-ranges')) {
+                res.setHeader('accept-ranges', 'bytes');
+            }
+
+            upstreamRes.pipe(res);
+        });
+
+        proxyReq.on('error', (err) => {
+            console.error(`[AudioStream Proxy Error] ${videoId}:`, err.message);
+            if (!res.headersSent) {
+                res.status(502).send('Error proxying audio stream');
+            }
+        });
+
+        req.on('close', () => {
+            proxyReq.destroy();
+        });
+
+    } catch (err) {
+        console.error(`[AudioStream Error] Failed to stream ${videoId}:`, err.message);
+        if (!res.headersSent) {
+            res.status(500).send('Failed to extract audio stream');
+        }
+    }
+});
 
 app.get('/api/find-alternative/:videoId', async (req, res) => {
     const { videoId } = req.params;
@@ -298,6 +372,9 @@ app.post('/api/request', async (req, res) => {
         userCooldowns.set(clientIp, now);
         broadcastState();
         saveState();
+
+        // Preload direct audio stream URL in background
+        getDirectAudioUrl(videoId).catch(() => {});
 
         io.emit('new_request_notification', track);
 
@@ -463,6 +540,7 @@ io.on('connection', (socket) => {
 
         broadcastState();
         saveState();
+        getDirectAudioUrl(track.id).catch(() => {});
     });
 
     // Add from history back into the queue (at end)

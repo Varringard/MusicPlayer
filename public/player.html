@@ -222,6 +222,10 @@
                     <button id="btnSkip" class="ctrl-btn" title="Следующий трек">
                         <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
                     </button>
+                    <button id="btnToggleMode" class="ctrl-btn" style="width:auto;padding:0 12px;font-size:0.75rem;font-weight:600;gap:6px;border-color:var(--accent-cyan);color:var(--accent-cyan);" title="Переключить режим воспроизведения: Прямой поток (обход РКН) / YouTube плеер">
+                        <span id="modeBadgeIcon">⚡</span>
+                        <span id="modeBadgeText">Прямой поток</span>
+                    </button>
                     <div class="volume-control">
                         <svg width="18" height="18" fill="var(--text-muted)" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
                         <input type="range" id="volumeSlider" class="volume-slider" min="0" max="100" value="80" title="Громкость">
@@ -390,7 +394,52 @@
 
     const panelFallbackAudio = document.getElementById('panelFallbackAudio');
     const fallbackVisualBox = document.getElementById('fallbackVisualBox');
+    const btnToggleMode = document.getElementById('btnToggleMode');
+    const modeBadgeIcon = document.getElementById('modeBadgeIcon');
+    const modeBadgeText = document.getElementById('modeBadgeText');
+
     let isUsingFallbackAudio = false;
+    let preferredPlayerMode = localStorage.getItem('preferred_player_mode') || 'direct'; // Default to direct stream for guaranteed playback in RU
+    let ytPlaybackWatchdog = null;
+    let currentLoadedOrderId = null;
+
+    function updateModeUI() {
+        if (!btnToggleMode) return;
+        if (preferredPlayerMode === 'direct') {
+            modeBadgeIcon.innerText = '⚡';
+            modeBadgeText.innerText = 'Прямой поток';
+            btnToggleMode.style.borderColor = 'var(--accent-cyan)';
+            btnToggleMode.style.color = 'var(--accent-cyan)';
+        } else {
+            modeBadgeIcon.innerText = '🎬';
+            modeBadgeText.innerText = 'YouTube';
+            btnToggleMode.style.borderColor = 'var(--accent-purple)';
+            btnToggleMode.style.color = '#fff';
+        }
+    }
+    updateModeUI();
+
+    if (btnToggleMode) {
+        btnToggleMode.addEventListener('click', () => {
+            preferredPlayerMode = preferredPlayerMode === 'direct' ? 'youtube' : 'direct';
+            localStorage.setItem('preferred_player_mode', preferredPlayerMode);
+            updateModeUI();
+            if (currentLoadedId) {
+                const seek = lastTrackedTime || 0;
+                executeLoad(currentLoadedId, seek);
+            }
+        });
+    }
+
+    panelFallbackAudio.addEventListener('ended', () => {
+        if (streamerAuthKey) {
+            socket.emit('player_track_ended', streamerAuthKey);
+        }
+    });
+
+    panelFallbackAudio.addEventListener('error', (e) => {
+        console.warn('panelFallbackAudio error:', e);
+    });
 
     // ─── YouTube IFrame Player ────────────────────────────────────────
     function initYouTube() {
@@ -419,8 +468,17 @@
         window.onYouTubeIframeAPIReady = initYouTube;
     }
 
+    // Watchdog for YouTube script loading (DPI block on www.youtube.com/iframe_api)
+    setTimeout(() => {
+        if (!isYtReady && !isUsingFallbackAudio && lastReceivedState && lastReceivedState.currentTrack) {
+            console.warn('[Watchdog] YouTube API script load timeout, starting direct stream');
+            switchToFallbackAudio(lastReceivedState.currentTrack.id, lastReceivedState.currentTime || 0);
+        }
+    }, 3500);
+
     function switchToFallbackAudio(videoId, seekTo) {
         if (!videoId) return;
+        if (ytPlaybackWatchdog) clearTimeout(ytPlaybackWatchdog);
         isUsingFallbackAudio = true;
         if (isYtReady && ytPlayer && typeof ytPlayer.stopVideo === 'function') {
             try { ytPlayer.stopVideo(); } catch (e) {}
@@ -442,7 +500,7 @@
     function onPlayerError(event) {
         console.warn('YouTube Player Error:', event.data);
         if (currentLoadedId) {
-            console.log('Switching to direct audio stream fallback via yt-dlp...');
+            console.log('Switching to direct audio stream fallback...');
             switchToFallbackAudio(currentLoadedId, lastTrackedTime);
         }
     }
@@ -525,6 +583,16 @@
 
     // Actually load + play a videoId at a given seek position
     function executeLoad(videoId, startSeconds) {
+        if (ytPlaybackWatchdog) clearTimeout(ytPlaybackWatchdog);
+
+        currentLoadedId = videoId;
+        lastTrackedTime = startSeconds || 0;
+
+        if (preferredPlayerMode === 'direct') {
+            switchToFallbackAudio(videoId, startSeconds);
+            return;
+        }
+
         isUsingFallbackAudio = false;
         fallbackVisualBox.style.display = 'none';
         panelFallbackAudio.pause();
@@ -532,11 +600,15 @@
 
         if (!isYtReady || !ytPlayer) {
             pendingLoad = { videoId, startSeconds };
+            ytPlaybackWatchdog = setTimeout(() => {
+                if (!isYtReady && !isUsingFallbackAudio) {
+                    console.warn('[Watchdog] YouTube API not ready, switching to direct stream');
+                    switchToFallbackAudio(videoId, startSeconds);
+                }
+            }, 3500);
             return;
         }
 
-        currentLoadedId = videoId;
-        lastTrackedTime = startSeconds || 0;
         ytPlayer.setVolume(Number(localVolumeSlider.value));
 
         ytPlayer.loadVideoById({
@@ -548,6 +620,17 @@
         try {
             ytPlayer.playVideo();
         } catch (e) {}
+
+        // Watchdog: If playback hasn't started playing within 3.5s, auto-fallback
+        ytPlaybackWatchdog = setTimeout(() => {
+            if (!isUsingFallbackAudio && ytPlayer && typeof ytPlayer.getPlayerState === 'function') {
+                const s = ytPlayer.getPlayerState();
+                if (s !== 1) { // 1 = PLAYING
+                    console.warn('[Watchdog] YouTube playback blocked or stalled (state:', s, '), switching to direct stream');
+                    switchToFallbackAudio(videoId, lastTrackedTime);
+                }
+            }
+        }, 3500);
 
         // If playback blocked by browser autoplay policy, show overlay
         setTimeout(() => {
@@ -643,6 +726,7 @@
             panelFallbackAudio.src = '';
             if (isYtReady && ytPlayer) ytPlayer.stopVideo();
             currentLoadedId = null;
+            currentLoadedOrderId = null;
             currentDuration = 0;
             pendingLoad = null;
             autoplayOverlay.style.display = 'none';
@@ -666,17 +750,24 @@
             scrubberFill.style.width = `${pct}%`;
         }
 
-        // Load new track if changed
-        if (track.id !== currentLoadedId) {
+        // Load new track if orderId or videoId changed
+        if (track.orderId !== currentLoadedOrderId || track.id !== currentLoadedId) {
+            currentLoadedOrderId = track.orderId;
             executeLoad(track.id, state.currentTime || 0);
         }
 
         if (state.isPlaying) {
             playIcon.style.display = 'none';
             pauseIcon.style.display = 'block';
+            if (isUsingFallbackAudio && panelFallbackAudio && panelFallbackAudio.paused) {
+                panelFallbackAudio.play().catch(() => {});
+            }
         } else {
             playIcon.style.display = 'block';
             pauseIcon.style.display = 'none';
+            if (isUsingFallbackAudio && panelFallbackAudio && !panelFallbackAudio.paused) {
+                panelFallbackAudio.pause();
+            }
         }
     }
 

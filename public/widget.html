@@ -42,6 +42,7 @@
     <!-- Hidden Audio Engine -->
     <div id="obsAudioEngine">
         <div id="obsYtPlayer"></div>
+        <audio id="obsFallbackAudio" preload="auto"></audio>
     </div>
 
     <!-- Minimalist OBS Widget Card -->
@@ -70,12 +71,25 @@
         const widgetProgressFill = document.getElementById('widgetProgressFill');
 
         let currentTrackId = null;
+        let currentTrackOrderId = null;
         let pendingTrack = null;
         let ytPlayer = null;
         let isYtReady = false;
+        let isUsingFallbackAudio = false;
+        let ytWatchdog = null;
         let socket = null;
         let progressInterval = null;
         let currentVolume = 80;
+
+        const obsFallbackAudio = document.getElementById('obsFallbackAudio');
+        if (obsFallbackAudio) {
+            obsFallbackAudio.addEventListener('ended', () => {
+                if (socket) socket.emit('widget_track_ended', widgetKey);
+            });
+            obsFallbackAudio.addEventListener('error', (e) => {
+                console.warn('OBS fallback audio error:', e);
+            });
+        }
 
         function formatTime(seconds) {
             if (!seconds || isNaN(seconds)) return '00:00';
@@ -90,6 +104,22 @@
             else if (len > 50)  trackTitle.style.fontSize = '13px';
             else if (len > 35)  trackTitle.style.fontSize = '14.5px';
             else                trackTitle.style.fontSize = '16px';
+        }
+
+        function switchToFallbackAudio(track, seekTo) {
+            if (!track || !track.id) return;
+            if (ytWatchdog) clearTimeout(ytWatchdog);
+            isUsingFallbackAudio = true;
+            if (isYtReady && ytPlayer && typeof ytPlayer.stopVideo === 'function') {
+                try { ytPlayer.stopVideo(); } catch (e) {}
+            }
+            if (obsFallbackAudio) {
+                obsFallbackAudio.src = `/api/stream/${track.id}`;
+                obsFallbackAudio.currentTime = seekTo || 0;
+                obsFallbackAudio.volume = currentVolume / 100;
+                obsFallbackAudio.play().catch(e => console.warn('OBS audio play failed:', e));
+            }
+            startProgressReporter();
         }
 
         // ─── YouTube IFrame API ──────────────────────────────────────
@@ -123,10 +153,10 @@
                         }
                     },
                     onError: (event) => {
-                        console.warn('YouTube IFrame error code:', event.data);
-                        setTimeout(() => {
-                            if (socket) socket.emit('widget_track_ended', widgetKey);
-                        }, 1000);
+                        console.warn('YouTube IFrame error in OBS:', event.data, 'switching to direct stream');
+                        if (currentTrackId) {
+                            switchToFallbackAudio({ id: currentTrackId }, 0);
+                        }
                     }
                 }
             });
@@ -140,10 +170,25 @@
 
         function loadTrack(track, seekTo) {
             if (!track || !track.id) return;
+            if (ytWatchdog) clearTimeout(ytWatchdog);
+
             currentTrackId = track.id;
+            currentTrackOrderId = track.orderId;
+            isUsingFallbackAudio = false;
+
+            if (obsFallbackAudio) {
+                obsFallbackAudio.pause();
+                obsFallbackAudio.src = '';
+            }
 
             if (!isYtReady || !ytPlayer) {
                 pendingTrack = { ...track, _seekTo: seekTo || 0 };
+                ytWatchdog = setTimeout(() => {
+                    if (!isYtReady && !isUsingFallbackAudio) {
+                        console.warn('[OBS Watchdog] YouTube API script not ready, using direct audio');
+                        switchToFallbackAudio(track, seekTo);
+                    }
+                }, 3500);
                 return;
             }
 
@@ -155,16 +200,35 @@
                 suggestedQuality: 'small'
             });
             ytPlayer.playVideo();
+
+            // Watchdog: If playback doesn't start in 3.5s, switch to direct stream
+            ytWatchdog = setTimeout(() => {
+                if (!isUsingFallbackAudio && ytPlayer && typeof ytPlayer.getPlayerState === 'function') {
+                    const s = ytPlayer.getPlayerState();
+                    if (s !== 1) { // 1 = PLAYING
+                        console.warn('[OBS Watchdog] YouTube playback stalled in OBS, switching to direct stream');
+                        switchToFallbackAudio(track, seekTo);
+                    }
+                }
+            }, 3500);
         }
 
         // ─── Progress Reporter — widget is the master source ─────────
         function startProgressReporter() {
             if (progressInterval) clearInterval(progressInterval);
             progressInterval = setInterval(() => {
-                if (!isYtReady || !ytPlayer || typeof ytPlayer.getCurrentTime !== 'function') return;
+                let currentTime = 0;
+                let duration = 0;
 
-                const currentTime = ytPlayer.getCurrentTime() || 0;
-                const duration = ytPlayer.getDuration() || 0;
+                if (isUsingFallbackAudio && obsFallbackAudio) {
+                    currentTime = obsFallbackAudio.currentTime || 0;
+                    duration = obsFallbackAudio.duration || 0;
+                } else if (isYtReady && ytPlayer && typeof ytPlayer.getCurrentTime === 'function') {
+                    currentTime = ytPlayer.getCurrentTime() || 0;
+                    duration = ytPlayer.getDuration() || 0;
+                } else {
+                    return;
+                }
 
                 if (duration > 0) {
                     trackTime.innerText = `${formatTime(currentTime)} / ${formatTime(duration)}`;
@@ -201,6 +265,14 @@
                 if (window.YT && window.YT.Player && !ytPlayer) {
                     window.onYouTubeIframeAPIReady();
                 }
+
+                setTimeout(() => {
+                    if (!isYtReady && !isUsingFallbackAudio && pendingTrack) {
+                        console.warn('[OBS Watchdog] YouTube script load timeout, playing direct audio');
+                        switchToFallbackAudio(pendingTrack, pendingTrack._seekTo || 0);
+                        pendingTrack = null;
+                    }
+                }, 3500);
             } catch (e) {
                 accessDeniedBox.style.display = 'inline-flex';
             }
@@ -212,6 +284,7 @@
             socket.on('state_update', (serverState) => {
                 if (serverState.volume !== undefined) {
                     currentVolume = serverState.volume;
+                    if (obsFallbackAudio) obsFallbackAudio.volume = currentVolume / 100;
                     if (isYtReady && ytPlayer && typeof ytPlayer.setVolume === 'function') {
                         ytPlayer.setVolume(currentVolume);
                     }
@@ -220,10 +293,17 @@
                 const track = serverState.currentTrack;
                 updateWidgetCard(track);
 
-                if (track && track.id !== currentTrackId) {
+                if (track && (track.orderId !== currentTrackOrderId || track.id !== currentTrackId)) {
+                    currentTrackOrderId = track.orderId;
                     loadTrack(track, serverState.currentTime || 0);
-                } else if (!track && currentTrackId) {
+                } else if (!track && (currentTrackOrderId || currentTrackId)) {
+                    currentTrackOrderId = null;
                     currentTrackId = null;
+                    isUsingFallbackAudio = false;
+                    if (obsFallbackAudio) {
+                        obsFallbackAudio.pause();
+                        obsFallbackAudio.src = '';
+                    }
                     if (isYtReady && ytPlayer && typeof ytPlayer.stopVideo === 'function') {
                         ytPlayer.stopVideo();
                     }
@@ -234,7 +314,9 @@
 
             // Panel seeks → widget seeks too
             socket.on('command_seek', (seconds) => {
-                if (isYtReady && ytPlayer && typeof ytPlayer.seekTo === 'function') {
+                if (isUsingFallbackAudio && obsFallbackAudio) {
+                    obsFallbackAudio.currentTime = seconds;
+                } else if (isYtReady && ytPlayer && typeof ytPlayer.seekTo === 'function') {
                     ytPlayer.seekTo(seconds, true);
                     ytPlayer.playVideo();
                 }
@@ -242,14 +324,19 @@
 
             // Panel play/pause → widget mirrors
             socket.on('command_play_pause', (isPlaying) => {
-                if (!isYtReady || !ytPlayer) return;
-                if (isPlaying) ytPlayer.playVideo();
-                else ytPlayer.pauseVideo();
+                if (isUsingFallbackAudio && obsFallbackAudio) {
+                    if (isPlaying) obsFallbackAudio.play().catch(() => {});
+                    else obsFallbackAudio.pause();
+                } else if (isYtReady && ytPlayer) {
+                    if (isPlaying) ytPlayer.playVideo();
+                    else ytPlayer.pauseVideo();
+                }
             });
 
             // Panel volume control → widget volume
             socket.on('command_set_volume', (vol) => {
                 currentVolume = vol;
+                if (obsFallbackAudio) obsFallbackAudio.volume = vol / 100;
                 if (isYtReady && ytPlayer && typeof ytPlayer.setVolume === 'function') {
                     ytPlayer.setVolume(vol);
                 }
